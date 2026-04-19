@@ -51,6 +51,9 @@ complianceguard/
 │       ├── html_formatter.py    # Human-readable browser report
 │       └── pdf_formatter.py     # Auditor-ready compliance document
 │
+├── mcp_server/                  # MCP server: Claude-queryable interface
+│   └── server.py                # Four tools exposing compliance data to Claude
+│
 ├── reports/
 │   ├── _LastReport/             # Always contains the most recent run
 │   └── _Archive/                # All previous runs archived here
@@ -94,20 +97,69 @@ Each finding is sent to Claude AI which returns structured analysis:
 
 ```json
 {
-  "attack_scenario": "An attacker exploiting a vulnerability in the container
-    could gain privileged access to the host kernel, allowing them to escape
-    the container sandbox and compromise the entire underlying infrastructure.",
-  "business_risk": "Running containers in privileged mode violates PCI-DSS
-    access control requirements and significantly increases the blast radius
-    of any container compromise.",
+  "attack_scenario": "An attacker exploiting a vulnerability in the container could gain privileged access to the host kernel, allowing them to escape the container sandbox and compromise the entire underlying infrastructure.",
+  "business_risk": "Running containers in privileged mode violates PCI-DSS access control requirements and significantly increases the blast radius of any container compromise.",
   "remediation_steps": [
     "Remove the 'privileged: true' flag from the container runtime configuration",
     "Replace privileged mode with specific Linux capabilities using CAP_ADD and CAP_DROP",
     "Redeploy the container with the updated configuration and validate functionality"
   ],
-  "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires least privilege access
-    for all system components to minimize the attack surface.",
+  "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires least privilege access for all system components to minimize the attack surface.",
   "estimated_fix_time": "30 minutes"
+}
+```
+
+---
+
+## MCP Server: Query Compliance Data Conversationally
+
+ComplianceGuard includes an MCP (Model Context Protocol) server that exposes compliance data as tools Claude can call conversationally. Once connected, you can ask Claude questions about your infrastructure compliance in plain English.
+
+### Available Tools
+
+| Tool | Description |
+|---|---|
+| `get_last_report` | Returns full findings from the most recent scan with AI analysis |
+| `get_findings_by_severity` | Filters findings by CRITICAL, HIGH, or MEDIUM |
+| `get_container_status` | Returns live observed state for a specific container |
+| `run_compliance_scan` | Triggers a fresh full compliance scan |
+
+### Example Conversations
+
+```
+You: What are the critical compliance violations in my infrastructure?
+Claude: [calls get_findings_by_severity("CRITICAL")]
+        There are 2 critical violations:
+        1. cg-api-service is running in privileged mode (PCI-DSS-v4.0-7.2.1)
+        2. cg-data-processor is running in privileged mode
+
+You: What is the security posture of cg-audit-logger?
+Claude: [calls get_container_status("cg-audit-logger")]
+        cg-audit-logger is fully compliant. Running with privileged mode
+        disabled, read-only filesystem, no-new-privileges enforced, and
+        all capabilities dropped. Zero compliance findings.
+
+You: Run a fresh scan and tell me what changed.
+Claude: [calls run_compliance_scan()]
+        Scan complete. 8 findings detected (2 Critical, 4 High, 2 Medium).
+```
+
+### Connect to Claude Code
+
+Add this to `~/.claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "complianceguard": {
+      "command": "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/bin/python3.11",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": "/path/to/complianceguard",
+      "env": {
+        "ANTHROPIC_API_KEY": "your-api-key-here"
+      }
+    }
+  }
 }
 ```
 
@@ -228,6 +280,9 @@ Separating policy (data) from enforcement (code) means security rules can be upd
 **Why Claude AI for classification?**
 Rule-based scanners detect drift but cannot explain risk in business terms or suggest specific remediation. The AI layer transforms raw findings into actionable intelligence: attack scenarios, compliance implications, and step-by-step fixes with time estimates.
 
+**Why an MCP server?**
+The MCP server layer decouples the compliance data from how it is consumed. Security engineers can query findings conversationally through Claude rather than reading raw JSON files. This is the same principle as building an API on top of a database: the data stays the same, but the interface becomes dramatically more accessible.
+
 **Why SHA-256 hashing?**
 Compliance evidence must be tamper-evident. If a report can be modified after generation, it cannot be trusted as an audit artifact. The hash provides mathematical proof that the report content has not changed since it was produced.
 
@@ -243,7 +298,6 @@ Standard Unix convention for security scanners. Enables CI/CD pipelines to treat
 
 The following features are planned for future development:
 
-- **MCP server integration:** Expose compliance reports via Model Context Protocol so Claude can query findings conversationally
 - **Formatter refactor:** Move formatter classes into a proper plugin architecture for easier extensibility
 - **Network and RBAC scanning:** Extend the scanner and evaluator to cover network policy drift and RBAC permission drift (policy files already exist)
 - **Scheduled continuous monitoring:** Run the agent on a defined interval using the included schedule dependency
@@ -259,6 +313,7 @@ The following features are planned for future development:
 | Agent runtime | Python 3.9+ |
 | Infrastructure simulation | Docker Compose |
 | AI classification | Anthropic Claude API (claude-3-5-haiku) |
+| MCP server | FastMCP (mcp 1.27.0) |
 | Policy format | YAML |
 | Terminal output | Rich |
 | HTML reports | Self-contained HTML/CSS |
