@@ -1,10 +1,10 @@
 # ComplianceGuard
 
-**AI-powered compliance drift detection agent for containerized infrastructure.**
+**AI-powered compliance drift detection agent with guided remediation for containerized infrastructure.**
 
-ComplianceGuard continuously scans live Docker infrastructure against declarative YAML security policies, identifies drift between declared and observed state, classifies each violation using Claude AI, and generates auditor-ready evidence reports mapped to PCI-DSS v4.0 controls.
+ComplianceGuard continuously scans live Docker infrastructure against declarative YAML security policies, identifies drift between declared and observed state, classifies each violation using Claude AI, generates auditor-ready evidence reports mapped to PCI-DSS v4.0 controls, and provides guided remediation with dry-run approval workflows.
 
-Built to demonstrate the core pattern behind modern security policy enforcement platforms: **policy as data, enforcement as code, evidence as output.**
+Built to demonstrate the core pattern behind modern security policy enforcement platforms: **policy as data, enforcement as code, evidence as output, remediation as a guided workflow.**
 
 ---
 
@@ -27,6 +27,11 @@ Phase 3 ── CLASSIFY ──── Claude AI enriches each finding:
 Phase 4 ── REPORT ─────── Generates JSON + HTML + PDF audit evidence
                            SHA-256 tamper detection hash included
                            Exit code 1 for CI/CD integration
+
+Phase 5 ── REMEDIATE ──── Guided remediation via MCP server:
+                           Dry-run preview → explicit approval → apply
+                           Container restarted, audit log written
+                           Re-scan confirms finding resolved
 ```
 
 ---
@@ -46,17 +51,19 @@ complianceguard/
 │   ├── evaluator.py             # Phase 2: declared vs observed diff
 │   ├── classifier.py            # Phase 3: Claude AI enrichment layer
 │   ├── reporter.py              # Phase 4: report orchestrator
+│   ├── remediator.py            # Phase 5: guided remediation engine
 │   └── formatters/              # Output formatters (single responsibility)
 │       ├── json_formatter.py    # Machine-readable audit evidence
 │       ├── html_formatter.py    # Human-readable browser report
 │       └── pdf_formatter.py     # Auditor-ready compliance document
 │
 ├── mcp_server/                  # MCP server: Claude-queryable interface
-│   └── server.py                # Four tools exposing compliance data to Claude
+│   └── server.py                # Six tools exposing compliance data and remediation
 │
 ├── reports/
 │   ├── _LastReport/             # Always contains the most recent run
-│   └── _Archive/                # All previous runs archived here
+│   ├── _Archive/                # All previous runs archived here
+│   └── remediation-audit.log   # Append-only log of all applied remediations
 │
 └── docker-compose.yml           # Simulated infrastructure with intentional drift
 ```
@@ -111,9 +118,9 @@ Each finding is sent to Claude AI which returns structured analysis:
 
 ---
 
-## MCP Server: Query Compliance Data Conversationally
+## MCP Server: Query and Remediate Conversationally
 
-ComplianceGuard includes an MCP (Model Context Protocol) server that exposes compliance data as tools Claude can call conversationally. Once connected, you can ask Claude questions about your infrastructure compliance in plain English.
+ComplianceGuard includes an MCP (Model Context Protocol) server that exposes compliance data and guided remediation as tools Claude can call conversationally.
 
 ### Available Tools
 
@@ -123,30 +130,57 @@ ComplianceGuard includes an MCP (Model Context Protocol) server that exposes com
 | `get_findings_by_severity` | Filters findings by CRITICAL, HIGH, or MEDIUM |
 | `get_container_status` | Returns live observed state for a specific container |
 | `run_compliance_scan` | Triggers a fresh full compliance scan |
+| `preview_remediation` | Dry-run: shows exact docker-compose.yml diff without applying |
+| `apply_remediation` | Applies an approved fix, restarts container, logs to audit trail |
 
-### Example Conversations
+### Guided Remediation Workflow
 
 ```
-You: What are the critical compliance violations in my infrastructure?
-Claude: [calls get_findings_by_severity("CRITICAL")]
-        There are 2 critical violations:
-        1. cg-api-service is running in privileged mode (PCI-DSS-v4.0-7.2.1)
-        2. cg-data-processor is running in privileged mode
+You: Show me the remediation plan for the privileged container finding on cg-api-service
 
-You: What is the security posture of cg-audit-logger?
-Claude: [calls get_container_status("cg-audit-logger")]
-        cg-audit-logger is fully compliant. Running with privileged mode
-        disabled, read-only filesystem, no-new-privileges enforced, and
-        all capabilities dropped. Zero compliance findings.
+Claude: [calls preview_remediation("no-privileged-containers", "cg-api-service")]
 
-You: Run a fresh scan and tell me what changed.
-Claude: [calls run_compliance_scan()]
-        Scan complete. 8 findings detected (2 Critical, 4 High, 2 Medium).
+        DRY-RUN REMEDIATION PREVIEW
+        Container:   cg-api-service
+        Rule:        no-privileged-containers
+
+        Proposed change to docker-compose.yml:
+          BEFORE:  privileged: True
+          AFTER:   privileged: False
+
+        Container restart required: True
+        NO CHANGES HAVE BEEN APPLIED.
+
+You: Apply the remediation for cg-api-service
+
+Claude: [calls apply_remediation("no-privileged-containers", "cg-api-service")]
+
+        Remediation applied successfully.
+        privileged set to False in docker-compose.yml.
+        Container restarted.
+        Change logged to reports/remediation-audit.log.
+
+You: Run a new compliance scan and tell me if cg-api-service is still flagged
+
+Claude: [calls run_compliance_scan(), then get_last_report()]
+
+        cg-api-service has zero findings. Remediation confirmed successful.
+        7 findings remain on other containers.
 ```
+
+### Remediation Audit Trail
+
+Every applied remediation is appended to `reports/remediation-audit.log`:
+
+```
+2026-04-19T01:23:45Z | REMEDIATION | APPLIED | container=cg-api-service | rule=no-privileged-containers | field=privileged | old=True | new=False
+```
+
+This log is append-only and serves as a compliance evidence artifact.
 
 ### Connect to Claude Code
 
-Add this to `~/.claude/claude_desktop_config.json`:
+Add this to `~/.claude.json`:
 
 ```json
 {
@@ -180,7 +214,7 @@ Every finding is tagged to a specific PCI-DSS v4.0 control. The evidence pipelin
 
 ## Tamper-Evident Audit Reports
 
-Every report includes a SHA-256 hash of its content. If a report is modified after generation, the hash no longer matches. This is a simplified implementation of cryptographic chaining for compliance evidence integrity.
+Every report includes a SHA-256 hash of its content. If a report is modified after generation, the hash no longer matches.
 
 ```
 SHA-256: 75b39187c2eb9ec2d649462014b609ec9aff84c601e12fa112cd1b28daba1c80
@@ -242,8 +276,6 @@ The included `docker-compose.yml` spins up four containers with intentional misc
 | cg-legacy-service | No security hardening applied | Multiple HIGH and MEDIUM |
 | cg-audit-logger | Fully compliant baseline | Zero findings |
 
-To test remediation, update `docker-compose.yml` to fix a misconfiguration, restart containers, and rerun the agent. The finding count will drop and the new report will reflect the remediated state.
-
 ---
 
 ## Report Output
@@ -260,7 +292,7 @@ Previous reports are automatically moved to `reports/_Archive/` on each run.
 
 ## CI/CD Integration
 
-The agent exits with code `1` when violations are found and `0` when fully compliant. This allows integration into CI/CD pipelines as a compliance gate:
+The agent exits with code `1` when violations are found and `0` when fully compliant:
 
 ```bash
 python3 -m agent.main
@@ -280,14 +312,17 @@ Separating policy (data) from enforcement (code) means security rules can be upd
 **Why Claude AI for classification?**
 Rule-based scanners detect drift but cannot explain risk in business terms or suggest specific remediation. The AI layer transforms raw findings into actionable intelligence: attack scenarios, compliance implications, and step-by-step fixes with time estimates.
 
+**Why dry-run before apply for remediation?**
+Security changes should never be applied without explicit human approval. The preview step shows the exact diff in docker-compose.yml before any change is made. The apply step requires a separate explicit confirmation. This is the guided remediation pattern: show, approve, apply, verify.
+
 **Why an MCP server?**
-The MCP server layer decouples the compliance data from how it is consumed. Security engineers can query findings conversationally through Claude rather than reading raw JSON files. This is the same principle as building an API on top of a database: the data stays the same, but the interface becomes dramatically more accessible.
+The MCP server layer decouples the compliance data from how it is consumed. Security engineers can query findings and trigger remediations conversationally through Claude rather than running commands or reading raw JSON files.
 
 **Why SHA-256 hashing?**
 Compliance evidence must be tamper-evident. If a report can be modified after generation, it cannot be trusted as an audit artifact. The hash provides mathematical proof that the report content has not changed since it was produced.
 
 **Why separate formatters?**
-Each output format (JSON, HTML, PDF) is handled by a dedicated module following the single responsibility principle. Adding a new format (CSV, Slack notification) means adding one file without touching existing code.
+Each output format (JSON, HTML, PDF) is handled by a dedicated module following the single responsibility principle. Adding a new format means adding one file without touching existing code.
 
 **Why exit code 1 on violations?**
 Standard Unix convention for security scanners. Enables CI/CD pipelines to treat compliance violations as deployment blockers without any additional configuration.
@@ -296,10 +331,8 @@ Standard Unix convention for security scanners. Enables CI/CD pipelines to treat
 
 ## Backlog
 
-The following features are planned for future development:
-
-- **Formatter refactor:** Move formatter classes into a proper plugin architecture for easier extensibility
-- **Network and RBAC scanning:** Extend the scanner and evaluator to cover network policy drift and RBAC permission drift (policy files already exist)
+- **Formatter refactor:** Move formatter classes into a proper plugin architecture
+- **Network and RBAC scanning:** Extend scanner and evaluator to cover network policy drift and RBAC permission drift (policy files already exist)
 - **Scheduled continuous monitoring:** Run the agent on a defined interval using the included schedule dependency
 - **Vault integration:** Replace simulated secrets with HashiCorp Vault dynamic secrets for agent authentication
 - **Webhook alerts:** Post findings to Slack or PagerDuty when CRITICAL violations are detected
