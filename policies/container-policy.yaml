@@ -1,0 +1,45 @@
+apiVersion: complianceguard/v1
+kind: ContainerPolicy
+metadata:
+  name: container-security-baseline
+  version: "1.0.0"
+  pci_controls:
+    - "PCI-DSS-v4.0-7.2.1"
+    - "PCI-DSS-v4.0-2.2.1"
+
+rules:
+  - id: no-privileged-containers
+    description: "Containers must not run in privileged mode"
+    severity: CRITICAL
+    check:
+      field: privileged
+      operator: equals
+      value: false
+    pci_control: "PCI-DSS-v4.0-7.2.1"
+
+  - id: no-new-privileges
+    description: "Containers must set no-new-privileges security option"
+    severity: HIGH
+    check:
+      field: security_opt
+      operator: contains
+      value: "no-new-privileges:true"
+    pci_control: "PCI-DSS-v4.0-2.2.1"
+
+  - id: read-only-root-filesystem
+    description: "Containers should use read-only root filesystem"
+    severity: MEDIUM
+    check:
+      field: read_only
+      operator: equals
+      value: true
+    pci_control: "PCI-DSS-v4.0-2.2.1"
+
+  - id: drop-all-capabilities
+    description: "Containers must drop all Linux capabilities"
+    severity: HIGH
+    check:
+      field: cap_drop
+      operator: contains
+      value: "ALL"
+    pci_control: "PCI-DSS-v4.0-7.2.1"

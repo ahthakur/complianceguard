@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  api-service:
+    image: nginx:alpine
+    container_name: cg-api-service
+    labels:
+      complianceguard.managed: "true"
+      complianceguard.tier: "2"
+      complianceguard.policy: "container-policy"
+    ports:
+      - "8080:80"
+    privileged: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["sleep", "infinity"]
+
+  data-processor:
+    image: python:3.11-alpine
+    container_name: cg-data-processor
+    labels:
+      complianceguard.managed: "true"
+      complianceguard.tier: "2"
+      complianceguard.policy: "container-policy"
+    privileged: true
+    command: ["sleep", "infinity"]
+
+  legacy-service:
+    image: alpine:latest
+    container_name: cg-legacy-service
+    labels:
+      complianceguard.managed: "true"
+      complianceguard.tier: "3"
+      complianceguard.policy: "container-policy"
+    command: ["sleep", "infinity"]
+
+  audit-logger:
+    image: alpine:latest
+    container_name: cg-audit-logger
+    labels:
+      complianceguard.managed: "true"
+      complianceguard.tier: "1"
+      complianceguard.policy: "container-policy"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command: ["sleep", "infinity"]

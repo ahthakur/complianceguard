@@ -1,0 +1,39 @@
+apiVersion: complianceguard/v1
+kind: RBACPolicy
+metadata:
+  name: rbac-baseline
+  version: "1.0.0"
+  pci_controls:
+    - "PCI-DSS-v4.0-7.2.1"
+    - "PCI-DSS-v4.0-8.2.1"
+
+roles:
+  - name: agent-tier-1
+    description: "Fully autonomous agent with broad read access"
+    allowed_resources:
+      - "database.analytics.*"
+      - "storage.reports.*"
+    denied_resources:
+      - "database.production.*"
+      - "secrets.*"
+    max_session_minutes: 60
+
+  - name: agent-tier-2
+    description: "Supervised agent with limited read access"
+    allowed_resources:
+      - "database.analytics.readonly"
+    denied_resources:
+      - "database.production.*"
+      - "secrets.*"
+      - "storage.*"
+    max_session_minutes: 30
+
+  - name: agent-tier-3
+    description: "Sandboxed agent with minimal access"
+    allowed_resources:
+      - "logs.readonly"
+    denied_resources:
+      - "database.*"
+      - "secrets.*"
+      - "storage.*"
+    max_session_minutes: 15

@@ -1,0 +1,29 @@
+# ComplianceGuard - AI-Powered Compliance Drift Detection Agent
+# Python dependencies
+
+# Anthropic Claude API - AI classification and remediation layer
+anthropic>=0.25.0
+
+# YAML parsing - declarative policy file processing
+pyyaml>=6.0.1
+
+# Docker SDK - query live container state for drift detection
+docker>=7.0.0
+
+# HTTP requests - query external APIs and endpoints
+requests>=2.31.0
+
+# Rich terminal output - structured console reporting
+rich>=13.7.0
+
+# Report generation
+fpdf2>=2.7.9
+
+# Scheduling - run agent on defined intervals
+schedule>=1.2.1
+
+# Cryptographic signing of audit reports
+cryptography>=42.0.0
+
+# Date and time utilities
+python-dateutil>=2.9.0
