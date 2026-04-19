@@ -22,6 +22,9 @@ fpdf2>=2.7.9
 # Scheduling - run agent on defined intervals
 schedule>=1.2.1
 
+# MCP server - exposes compliance tools to Claude via Model Context Protocol
+mcp[cli]>=1.0.0
+
 # Cryptographic signing of audit reports
 cryptography>=42.0.0
 
