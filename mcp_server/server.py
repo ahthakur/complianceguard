@@ -344,6 +344,88 @@ def run_compliance_scan() -> str:
         return f"Failed to run scan: {e}"
 
 
+@mcp.tool()
+def preview_remediation(rule_id: str, container_name: str) -> str:
+    """
+    Preview the exact change that would be made to fix a compliance finding.
+    This is a dry-run: no changes are applied to the infrastructure.
+    rule_id: the rule ID from the finding (e.g. no-privileged-containers, read-only-root-filesystem, drop-all-capabilities, no-new-privileges)
+    container_name: the container to fix (e.g. cg-data-processor, cg-legacy-service)
+    Returns a detailed diff showing exactly what would change in docker-compose.yml.
+    Use this before apply_remediation to review and approve the proposed change.
+    """
+    # Import the remediator module
+    try:
+        from agent.remediator import preview_remediation as _preview
+    except ImportError as e:
+        return f"Cannot import remediator module: {e}"
+
+    # Run the dry-run preview
+    result = _preview(rule_id, container_name)
+
+    # Handle unsupported rules or invalid inputs
+    if not result["supported"]:
+        return result["message"]
+
+    # Handle already-compliant containers
+    if result["already_compliant"]:
+        return (
+            f"{container_name} is already compliant for rule '{rule_id}'.\n"
+            f"Current value: {result['current_value']}\n"
+            f"Required value: {result['proposed_value']}\n"
+            f"No changes needed."
+        )
+
+    # Build the dry-run diff display
+    lines = [
+        f"DRY-RUN REMEDIATION PREVIEW",
+        f"{'='*50}",
+        f"Container:    {container_name}",
+        f"Rule:         {rule_id}",
+        f"Description:  {result['description']}",
+        f"",
+        f"Proposed change to docker-compose.yml:",
+        f"",
+        f"  BEFORE:  {result['field']}: {result['current_value']}",
+        f"  AFTER:   {result['field']}: {result['proposed_value']}",
+        f"",
+        f"Container restart required: {result['requires_restart']}",
+        f"",
+        f"{'='*50}",
+        f"NO CHANGES HAVE BEEN APPLIED.",
+        f"",
+        f"To apply this fix, use apply_remediation with:",
+        f"  rule_id: {rule_id}",
+        f"  container_name: {container_name}",
+    ]
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def apply_remediation(rule_id: str, container_name: str) -> str:
+    """
+    Apply an approved remediation to fix a compliance finding.
+    Only call this after reviewing the dry-run output from preview_remediation.
+    rule_id: the rule ID to fix (e.g. no-privileged-containers, read-only-root-filesystem, drop-all-capabilities, no-new-privileges)
+    container_name: the container to fix (e.g. cg-data-processor, cg-legacy-service)
+    This will modify docker-compose.yml and restart the affected container.
+    Every remediation is logged to reports/remediation-audit.log for compliance evidence.
+    """
+    # Import the remediator module
+    try:
+        from agent.remediator import apply_remediation as _apply
+    except ImportError as e:
+        return f"Cannot import remediator module: {e}"
+
+    # Apply the remediation
+    result = _apply(rule_id, container_name)
+
+    # Return the result message directly
+    # The remediator builds a clear success or failure message
+    return result["message"]
+
+
 if __name__ == "__main__":
     # Run the MCP server using stdio transport
     # stdio is the standard transport for MCP servers used with Claude Desktop and Claude Code
