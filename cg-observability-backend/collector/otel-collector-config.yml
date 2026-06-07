@@ -1,0 +1,41 @@
+# =============================================================================
+# OTel Collector config for ComplianceGuard backend
+# =============================================================================
+# Receives OTLP from the agent, batches, then exports:
+#   traces  -> Tempo
+#   metrics -> Prometheus (remote write)
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+
+processors:
+  batch:
+    timeout: 2s
+
+exporters:
+  # Traces go to Tempo via OTLP
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Metrics go to Prometheus via remote write
+  prometheusremotewrite:
+    endpoint: "http://prometheus:9090/api/v1/write"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheusremotewrite]

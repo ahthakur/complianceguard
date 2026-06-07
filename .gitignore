@@ -13,3 +13,5 @@ build/
 reports/_Archive/
 reports/_LastReport/
 .claude/
+*.zip
+reports/*.log

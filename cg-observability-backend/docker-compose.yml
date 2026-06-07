@@ -1,0 +1,64 @@
+# =============================================================================
+# ComplianceGuard Observability Backend
+# =============================================================================
+# A minimal LGTM-style backend to visualize ComplianceGuard's telemetry.
+# Your agent (running on your Mac, NOT in this compose) sends OTLP to the
+# Collector here. The Collector routes traces to Tempo and metrics to
+# Prometheus. Grafana visualizes both.
+#
+# Run from this folder:    docker-compose up -d
+# Stop:                     docker-compose down
+#
+# Your agent stays running on the host with `python -m agent.main`.
+# It connects to the Collector at localhost:4317.
+# =============================================================================
+
+services:
+
+  # OTel Collector: receives OTLP from your agent, routes to backends
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    command: ["--config=/etc/otel-collector-config.yml"]
+    volumes:
+      - ./collector/otel-collector-config.yml:/etc/otel-collector-config.yml
+    ports:
+      - "4317:4317"     # OTLP gRPC - your agent sends here
+    depends_on:
+      - tempo
+      - prometheus
+
+  # Tempo: stores traces
+  tempo:
+    image: grafana/tempo:2.4.0
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo.yml
+    ports:
+      - "3200:3200"
+
+  # Prometheus: stores metrics (remote-write target for the Collector)
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  # Grafana: the dashboards (this is where you LOOK at everything)
+  grafana:
+    image: grafana/grafana:10.4.0
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3001:3000"     # open http://localhost:3001
+    depends_on:
+      - tempo
+      - prometheus

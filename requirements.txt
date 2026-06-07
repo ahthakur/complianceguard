@@ -30,3 +30,8 @@ cryptography>=42.0.0
 
 # Date and time utilities
 python-dateutil>=2.9.0
+
+#OTEL
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp-proto-grpc>=1.27.0

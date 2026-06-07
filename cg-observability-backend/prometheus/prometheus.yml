@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s
+
+# The Collector pushes metrics here via remote write.
+# No scrape_configs needed for the agent metrics since they are pushed.
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

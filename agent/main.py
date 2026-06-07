@@ -1,82 +1,99 @@
-"""ComplianceGuard Agent - Main orchestrator. Coordinates scanning, evaluation, classification and reporting."""
+"""ComplianceGuard Agent - Main orchestrator."""
 
-# Standard library imports
-import logging                      # For configuring the root logger used by all modules
-import os                           # For reading environment variables
-import sys                          # For exiting with a non-zero code on failure
+import logging
+import os
+import sys
 
-# Third-party imports
-from dotenv import load_dotenv      # For loading .env file into environment variables
+# Only the trace API is needed here. NOT the SDK classes -
+# those live in observability.py and are already wired up.
+from opentelemetry import trace
 
-# Load .env before importing agent modules so module-level os.getenv() calls
-# (e.g. ANTHROPIC_API_KEY in classifier.py) pick up the values from .env
+from dotenv import load_dotenv
 load_dotenv()
 
-# Internal module imports — the four pipeline stages
 from agent.scanner import scan_all
 from agent.evaluator import evaluate_all
 from agent.classifier import classify_all
 from agent.reporter import generate_report
 
+# lowercase 'observability' to match the filename
+from agent.observability import initialize_observability, shutdown_observability
+
+# Get a tracer ONCE at module level. This is the object you use
+# to create spans. It works because observability.py registered
+# the global TracerProvider.
+tracer = trace.get_tracer(__name__)
+
 
 def configure_logging() -> None:
-    """
-    Configure the root logger for the entire agent.
-    All modules use logging.getLogger(__name__) which inherits this configuration.
-    """
     logging.basicConfig(
-        level=logging.INFO,                         # Show INFO and above (INFO, WARNING, ERROR)
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",  # Timestamp + level + module
-        datefmt="%Y-%m-%d %H:%M:%S",               # Human-readable timestamp format
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("opentelemetry").setLevel(logging.WARNING)
 
 
 def main() -> None:
-    """
-    Run one full ComplianceGuard scan cycle:
-    1. Load environment variables from .env
-    2. Scan live Docker infrastructure
-    3. Evaluate observed state against declared policy
-    4. Classify findings with Claude AI
-    5. Generate and save the audit report
-    """
-    # Configure logging before anything else so all modules log consistently
+    # Order matters: logging first, then telemetry, then get the logger.
     configure_logging()
-
-    logger = logging.getLogger(__name__)
+    initialize_observability()              # just call it, no return value
+    logger = logging.getLogger(__name__)    # define logger BEFORE using it
     logger.info("ComplianceGuard agent starting...")
 
+    # We capture the exit code in a variable and call sys.exit() at the
+    # very end, AFTER the spans close and telemetry is flushed. This avoids
+    # SystemExit propagating up through the open spans.
+    exit_code = 0
+
     try:
-        # Step 1: Scan live Docker infrastructure
-        # Returns observed state dict: {"containers": [...]}
-        logger.info("Phase 1/4: Scanning infrastructure...")
-        observed = scan_all()
+        # ROOT SPAN: wraps the entire agent run. Everything nested inside
+        # this 'with' block becomes a child of this span automatically.
+        with tracer.start_as_current_span("compliance.run") as root_span:
 
-        # Step 2: Evaluate observed state against declared policy
-        # Returns evaluation result dict: {"findings": [...], "summary": {...}}
-        logger.info("Phase 2/4: Evaluating policy compliance...")
-        evaluated = evaluate_all(observed)
+            # --- Phase 1: Scan ---
+            # This 'with' is nested inside the root span's block, so OTel
+            # makes "compliance.scan" a child of "compliance.run".
+            with tracer.start_as_current_span("compliance.scan") as span:
+                logger.info("Phase 1/4: Scanning infrastructure...")
+                observed = scan_all()
+                # set_attribute is the correct way to add context to a span
+                span.set_attribute("containers.scanned", len(observed.get("containers", [])))
 
-        # Step 3: Classify findings with Claude AI
-        # Returns classified result dict with AI-enriched findings
-        logger.info("Phase 3/4: Classifying findings with Claude AI...")
-        classified = classify_all(evaluated)
+            # --- Phase 2: Evaluate ---
+            with tracer.start_as_current_span("compliance.evaluate") as span:
+                logger.info("Phase 2/4: Evaluating policy compliance...")
+                evaluated = evaluate_all(observed)
+                span.set_attribute("findings.count", len(evaluated.get("findings", [])))
 
-        # Step 4: Generate, save, and display the audit report
-        # Returns the file path where the report was saved
-        logger.info("Phase 4/4: Generating audit report...")
-        report_path = generate_report(classified)
+            # --- Phase 3: Classify ---
+            with tracer.start_as_current_span("compliance.classify") as span:
+                logger.info("Phase 3/4: Classifying findings with Claude AI...")
+                classified = classify_all(evaluated)
 
-        logger.info(f"ComplianceGuard run complete. Report: {report_path}")
+            # --- Phase 4: Report ---
+            with tracer.start_as_current_span("compliance.report") as span:
+                logger.info("Phase 4/4: Generating audit report...")
+                report_path = generate_report(classified)
+                span.set_attribute("report.path", str(report_path))
 
-        # Exit with code 1 if there are any findings so CI/CD pipelines can detect non-compliance
-        # Exit code 0 means fully compliant, exit code 1 means violations were found
-        total = classified["summary"].get("total_findings", 0)
-        sys.exit(1 if total > 0 else 0)
+            # Add a summary attribute to the ROOT span
+            total = classified["summary"].get("total_findings", 0)
+            root_span.set_attribute("findings.total", total)
+            logger.info(f"ComplianceGuard run complete. Report: {report_path}")
+
+            exit_code = 1 if total > 0 else 0
 
     except Exception as e:
         logger.error(f"Agent run failed: {e}")
-        sys.exit(2)                             # Exit code 2 signals an agent execution error
+        exit_code = 2
+    finally:
+        # Runs no matter what: success, violations, or error.
+        # Flushes all buffered telemetry before the process ends.
+        shutdown_observability()
+
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
