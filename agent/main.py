@@ -4,6 +4,8 @@ import logging
 import os
 import sys
 
+from datetime import datetime
+
 # Only the trace API is needed here. NOT the SDK classes -
 # those live in observability.py and are already wired up.
 from opentelemetry import trace
@@ -18,12 +20,11 @@ from agent.reporter import generate_report
 
 # lowercase 'observability' to match the filename
 from agent.observability import initialize_observability, shutdown_observability
-
 # Get a tracer ONCE at module level. This is the object you use
 # to create spans. It works because observability.py registered
 # the global TracerProvider.
 tracer = trace.get_tracer(__name__)
-
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
 def configure_logging() -> None:
     logging.basicConfig(
@@ -41,7 +42,6 @@ def main() -> None:
     initialize_observability()              # just call it, no return value
     logger = logging.getLogger(__name__)    # define logger BEFORE using it
     logger.info("ComplianceGuard agent starting...")
-
     # We capture the exit code in a variable and call sys.exit() at the
     # very end, AFTER the spans close and telemetry is flushed. This avoids
     # SystemExit propagating up through the open spans.
@@ -98,3 +98,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    

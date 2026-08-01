@@ -23,6 +23,8 @@ import subprocess                   # For triggering agent scans as a subprocess
 import sys                          # For path manipulation
 from pathlib import Path            # For clean file path operations
 from typing import Any              # Type hint: Any means any data type
+from opentelemetry import trace
+from agent.observability import initialize_observability
 
 # Add the parent directory to sys.path so we can import agent modules
 # This allows the MCP server to import scanner.py directly for container status
@@ -34,6 +36,10 @@ from mcp.server.fastmcp import FastMCP    # FastMCP: the simplest way to build a
 # Create the FastMCP server instance
 # The name appears in Claude's tool list when connected
 mcp = FastMCP("ComplianceGuard")
+# Initialize telemetry for the MCP server process
+initialize_observability()
+
+tracer = trace.get_tracer(__name__)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -343,88 +349,72 @@ def run_compliance_scan() -> str:
     except Exception as e:
         return f"Failed to run scan: {e}"
 
-
 @mcp.tool()
 def preview_remediation(rule_id: str, container_name: str) -> str:
-    """
-    Preview the exact change that would be made to fix a compliance finding.
-    This is a dry-run: no changes are applied to the infrastructure.
-    rule_id: the rule ID from the finding (e.g. no-privileged-containers, read-only-root-filesystem, drop-all-capabilities, no-new-privileges)
-    container_name: the container to fix (e.g. cg-data-processor, cg-legacy-service)
-    Returns a detailed diff showing exactly what would change in docker-compose.yml.
-    Use this before apply_remediation to review and approve the proposed change.
-    """
-    # Import the remediator module
-    try:
-        from agent.remediator import preview_remediation as _preview
-    except ImportError as e:
-        return f"Cannot import remediator module: {e}"
+    """...docstring unchanged..."""
+    with tracer.start_as_current_span(
+        "mcp.preview_remediation",
+        kind=trace.SpanKind.SERVER,
+    ) as span:
+        span.set_attribute("mcp.tool", "preview_remediation")
+        span.set_attribute("remediation.rule_id", rule_id)
+        span.set_attribute("remediation.container", container_name)
 
-    # Run the dry-run preview
-    result = _preview(rule_id, container_name)
+        try:
+            from agent.remediator import preview_remediation as _preview
+        except ImportError as e:
+            return f"Cannot import remediator module: {e}"
 
-    # Handle unsupported rules or invalid inputs
-    if not result["supported"]:
-        return result["message"]
+        result = _preview(rule_id, container_name)
+        span.set_attribute("remediation.supported", result.get("supported", False))
 
-    # Handle already-compliant containers
-    if result["already_compliant"]:
+        if not result.get("supported"):
+            return result.get("message", "Remediation not supported for this rule.")
+
+        if result.get("already_compliant"):
+            return (
+                f"Container {container_name} is already compliant for rule {rule_id}. "
+                f"Field '{result['field']}' is already set to {result['proposed_value']}."
+            )
+
         return (
-            f"{container_name} is already compliant for rule '{rule_id}'.\n"
-            f"Current value: {result['current_value']}\n"
-            f"Required value: {result['proposed_value']}\n"
-            f"No changes needed."
+            f"Remediation Preview for {container_name} ({rule_id}):\n"
+            f"  Service: {result['service_name']}\n"
+            f"  Field: {result['field']}\n"
+            f"  Current value: {result['current_value']}\n"
+            f"  Proposed value: {result['proposed_value']}\n"
+            f"  Description: {result['description']}\n"
+            f"  Requires restart: {result['requires_restart']}\n"
+            f"\nUse apply_remediation to apply this change."
         )
-
-    # Build the dry-run diff display
-    lines = [
-        f"DRY-RUN REMEDIATION PREVIEW",
-        f"{'='*50}",
-        f"Container:    {container_name}",
-        f"Rule:         {rule_id}",
-        f"Description:  {result['description']}",
-        f"",
-        f"Proposed change to docker-compose.yml:",
-        f"",
-        f"  BEFORE:  {result['field']}: {result['current_value']}",
-        f"  AFTER:   {result['field']}: {result['proposed_value']}",
-        f"",
-        f"Container restart required: {result['requires_restart']}",
-        f"",
-        f"{'='*50}",
-        f"NO CHANGES HAVE BEEN APPLIED.",
-        f"",
-        f"To apply this fix, use apply_remediation with:",
-        f"  rule_id: {rule_id}",
-        f"  container_name: {container_name}",
-    ]
-
-    return "\n".join(lines)
-
 
 @mcp.tool()
 def apply_remediation(rule_id: str, container_name: str) -> str:
     """
     Apply an approved remediation to fix a compliance finding.
-    Only call this after reviewing the dry-run output from preview_remediation.
-    rule_id: the rule ID to fix (e.g. no-privileged-containers, read-only-root-filesystem, drop-all-capabilities, no-new-privileges)
-    container_name: the container to fix (e.g. cg-data-processor, cg-legacy-service)
-    This will modify docker-compose.yml and restart the affected container.
-    Every remediation is logged to reports/remediation-audit.log for compliance evidence.
+    ...docstring unchanged...
     """
-    # Import the remediator module
-    try:
-        from agent.remediator import apply_remediation as _apply
-    except ImportError as e:
-        return f"Cannot import remediator module: {e}"
+    # NEW: span representing the MCP tool invocation by Claude
+    with tracer.start_as_current_span(
+        "mcp.apply_remediation",
+        kind=trace.SpanKind.SERVER,
+    ) as span:
+        span.set_attribute("mcp.tool", "apply_remediation")
+        span.set_attribute("remediation.rule_id", rule_id)
+        span.set_attribute("remediation.container", container_name)
 
-    # Apply the remediation
-    result = _apply(rule_id, container_name)
+        try:
+            from agent.remediator import apply_remediation as _apply
+        except ImportError as e:
+            span.set_status(trace.Status(trace.StatusCode.ERROR, "import failed"))
+            return f"Cannot import remediator module: {e}"
 
-    # Return the result message directly
-    # The remediator builds a clear success or failure message
-    return result["message"]
+        # This calls the remediator, which creates its own child span
+        # (remediation.apply) under this one, plus the restart child span.
+        result = _apply(rule_id, container_name)
 
+        span.set_attribute("remediation.changed", result.get("changed", False))
+        return result["message"]
 
 if __name__ == "__main__":
     # Run the MCP server using stdio transport

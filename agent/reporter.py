@@ -24,7 +24,6 @@ from rich import box                # Rich: provides box drawing styles for tabl
 from agent.formatters import json_formatter     # Handles JSON output
 from agent.formatters import html_formatter     # Handles HTML output
 from agent.formatters import pdf_formatter      # Handles PDF output
-
 # Create a logger and Rich console for this module
 logger = logging.getLogger(__name__)
 console = Console()
@@ -124,6 +123,7 @@ def build_report(classified_result: dict[str, Any]) -> dict[str, Any]:
             "medium":             summary.get("medium", 0),
             "containers_scanned": summary.get("containers_scanned", 0),
             "ai_classified":      summary.get("ai_classified", 0),
+            "llm_cost":           summary.get("llm_cost",{}),
         },
         "pci_controls_evaluated": [
             "PCI-DSS-v4.0-7.2.1",
@@ -201,11 +201,25 @@ def print_terminal_summary(report: dict[str, Any], report_path: str) -> None:
             )
 
         console.print(table)
+    cost = report["summary"].get("llm_cost") or {}
+    if cost.get("calls"):
+        cost_table = Table(title="LLM Cost Summary", box=box.ROUNDED)
+        cost_table.add_column("Metric",style="cyan")
+        cost_table.add_column("value",justify="right")
+        cost_table.add_row("Model ",cost["model"])
+        cost_table.add_row("API Calls",str(cost["calls"]))
+        cost_table.add_row("Input tokens",f"{cost["input_tokens"]:,}")
+        cost_table.add_row("Output tokens",f"{cost["output_tokens"]:,}")
+        cost_table.add_row("Total cost",f"${cost["total_cost_usd"]:.4f}")
+        cost_table.add_row("Cost per finding",f"{cost["cost_per_finding"]:.5f}")
+        cost_table.add_row("Output Share of cost",f"{cost["output_share"]:.1%}")
+        cost_table.add_row("Classification wall time",f"{cost["wall_time_s"]:.1f}s")
+        console.print()
+        console.print(cost_table)
 
     # Tamper detection hash footer
     console.print(f"\n[dim]SHA-256: {report['report_hash']}[/dim]")
     console.print(f"[dim]Verify: recompute hash of report content and compare[/dim]\n")
-
 
 def generate_report(classified_result: dict[str, Any]) -> str:
     """

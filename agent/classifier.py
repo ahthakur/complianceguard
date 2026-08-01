@@ -29,8 +29,10 @@ MODEL = "claude-haiku-4-5-20251001"
 # ===========================================================================
 
 # Pricing constants for Claude Haiku (per million tokens). Verify current rates.
-INPUT_COST_PER_MTOK = 0.80
-OUTPUT_COST_PER_MTOK = 4.00
+INPUT_COST_PER_MTOK = 1.00
+OUTPUT_COST_PER_MTOK = 5.00
+CACHE_READ_MULTIPLIER = 0.10
+CACHE_WRITE_MULTIPLIER = 1.25 
 
 input_tokens_counter = meter.create_counter(
     name="llm.tokens.input",
@@ -111,24 +113,29 @@ def classify_finding(
 
             # CHANGED: compute duration AFTER the call returns
             duration = time.time() - start
-
             # NEW: read token usage from the response. The Anthropic SDK
             # returns a .usage object with input_tokens and output_tokens.
             input_tokens = response.usage.input_tokens
             output_tokens = response.usage.output_tokens
+            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+            cache_write = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+
 
             # NEW: compute estimated cost from the token counts
             cost = (
-                (input_tokens / 1_000_000) * INPUT_COST_PER_MTOK
-                + (output_tokens / 1_000_000) * OUTPUT_COST_PER_MTOK
-            )
+                (input_tokens * INPUT_COST_PER_MTOK)
+                + (cache_read * INPUT_COST_PER_MTOK * CACHE_READ_MULTIPLIER)
+                + (cache_write * INPUT_COST_PER_MTOK * CACHE_WRITE_MULTIPLIER)
+                + (output_tokens * OUTPUT_COST_PER_MTOK)
+            )/ 1_000_000
 
             # --- Attach everything to the SPAN (for the trace view) ---
             span.set_attribute("llm.input_tokens", input_tokens)
             span.set_attribute("llm.output_tokens", output_tokens)
             span.set_attribute("llm.latency_ms", round(duration * 1000, 2))
             span.set_attribute("llm.cost_usd", round(cost, 6))
-
+            span.set_attribute("llm.cache_read_tokens",cache_read)
+            span.set_attribute("llm.cache_write_tokens",cache_write)
             # --- Record METRICS (for dashboards and aggregation) ---
             # CHANGED: now uses the real variables (input_tokens, duration, etc.)
             # instead of undefined names. The 'model' attribute lets you break
@@ -158,6 +165,14 @@ def classify_finding(
                 "pci_requirement_detail": ai_analysis.get("pci_requirement_detail", "N/A"),
                 "estimated_fix_time": ai_analysis.get("estimated_fix_time", "N/A"),
                 "ai_classified": True,
+                "_usage":{
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read": cache_read,
+                    "cache_write":cache_write,
+                    "cost_usd":cost,
+                    "latency_s":duration,
+                },
             }
 
             logger.info(f"Successfully classified: {finding['rule_id']} on {finding['container']}")
@@ -203,16 +218,38 @@ def classify_all(evaluation_result: dict[str, Any]) -> dict[str, Any]:
         classified_findings.append(classified)
 
     successful = sum(1 for f in classified_findings if f.get("ai_classified"))
-
+    total_in = sum(f.get("_usage",{}).get("input_tokens",0) for f in classified_findings)
+    total_out = sum(f.get("_usage",{}).get("output_tokens",0) for f in classified_findings)
+    total_cost = sum(f.get("_usage",{}).get("cost_usd",0.0) for f in classified_findings)
+    calls = sum(1 for f in classified_findings if "_usage" in f)
+    total_latency = sum(f.get("_usage",{}).get("latency_s",0) for f in classified_findings)
     logger.info(
         f"Classification complete: {successful}/{len(findings)} "
         f"findings successfully classified by AI"
     )
-
+    
+    if calls:
+        logger.info(
+            f"Run totals: {total_in} input tokens, {total_out} output tokens, "
+            f"${total_cost:.4f} across {calls} API calls, "
+            f"${total_cost / calls:.5f} per finding"
+        )
+    else:
+        logger.warning("No _usage data on findings. Token accounting is not wired up.")
     return {
         "findings": classified_findings,
         "summary": {
             **evaluation_result["summary"],
             "ai_classified": successful,
+            "llm_cost":{
+                "model":MODEL,
+                "calls":calls,
+                "input_tokens":total_in,
+                "output_tokens":total_out,
+                "total_cost_usd":total_cost,
+                "cost_per_finding":total_cost / calls if calls else 0.0,
+                "output_share":(total_out * OUTPUT_COST_PER_MTOK / 1_000_000) / total_cost if total_cost else 0.0,
+                "wall_time_s":total_latency,
+            },
         }
     }

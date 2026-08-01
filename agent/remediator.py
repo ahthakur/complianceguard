@@ -18,13 +18,15 @@ import subprocess                   # For running docker compose commands to res
 from datetime import datetime       # For timestamping remediation audit events
 from pathlib import Path            # For clean file path operations
 from typing import Any              # Type hint: Any means a variable can hold any data type
-
+from opentelemetry import trace
 # Third-party imports
 import yaml                         # For parsing and writing docker-compose.yml
 
+
+
 # Create a logger for this module
 logger = logging.getLogger(__name__)
-
+tracer = trace.get_tracer(__name__)
 # Path to docker-compose.yml relative to the project root
 # We go up one level from agent/ to reach the project root
 COMPOSE_FILE = Path(__file__).parent.parent / "docker-compose.yml"
@@ -178,85 +180,106 @@ def preview_remediation(rule_id: str, container_name: str) -> dict[str, Any]:
 def apply_remediation(rule_id: str, container_name: str) -> dict[str, Any]:
     """
     Apply the approved remediation to docker-compose.yml and restart the container.
-    This function should only be called after the user has reviewed and approved
-    the dry-run preview from preview_remediation().
-    rule_id: the rule ID to remediate
-    container_name: the container to fix
-    Returns a result dictionary indicating success or failure.
     """
-    # First run the preview to get the change details and validate inputs
-    preview = preview_remediation(rule_id, container_name)
+    # NEW: span around the entire remediation action. This is the audit trail
+    # for what the agent actually changed in the infrastructure.
+    with tracer.start_as_current_span(
+        "remediation.apply",
+        kind=trace.SpanKind.INTERNAL,
+    ) as span:
+        # NEW: capture what we are remediating up front
+        span.set_attribute("remediation.rule_id", rule_id)
+        span.set_attribute("remediation.container", container_name)
 
-    # If the rule is not supported or inputs are invalid, return the error
-    if not preview["supported"]:
-        return {"success": False, "message": preview["message"]}
+        # First run the preview to get the change details and validate inputs
+        preview = preview_remediation(rule_id, container_name)
 
-    # If the container is already compliant, no action needed
-    if preview["already_compliant"]:
+        if not preview["supported"]:
+            # NEW: record that the rule was not supported (no change made)
+            span.set_attribute("remediation.outcome", "unsupported")
+            span.set_attribute("remediation.changed", False)
+            return {"success": False, "message": preview["message"]}
+
+        if preview["already_compliant"]:
+            # NEW: record that no change was needed
+            span.set_attribute("remediation.outcome", "already_compliant")
+            span.set_attribute("remediation.changed", False)
+            return {
+                "success": True,
+                "message": f"{container_name} is already compliant for rule '{rule_id}'. No changes needed.",
+                "changed": False
+            }
+
+        compose_data = load_compose_file()
+        service_name = preview["service_name"]
+        recipe = REMEDIATION_MAP[rule_id]
+
+        # NEW: capture the before/after values as span attributes.
+        # This is the core of the agent-control story: the trace records
+        # exactly what value the agent changed and to what.
+        span.set_attribute("remediation.field", recipe["field"])
+        span.set_attribute("remediation.old_value", str(preview["current_value"]))
+        span.set_attribute("remediation.new_value", str(recipe["value"]))
+
+        compose_data["services"][service_name][recipe["field"]] = recipe["value"]
+        save_compose_file(compose_data)
+
+        # NEW: mark the moment the file was modified as a span event
+        span.add_event("compose_file_modified", attributes={
+            "service": service_name,
+            "field": recipe["field"],
+        })
+
+        log_remediation_event(
+            rule_id=rule_id,
+            container=container_name,
+            field=recipe["field"],
+            old_value=preview["current_value"],
+            new_value=recipe["value"],
+            status="applied"
+        )
+
+        # NEW: trace the container restart as a child span
+        with tracer.start_as_current_span("remediation.restart_container") as restart_span:
+            restart_span.set_attribute("container.name", container_name)
+            restart_result = restart_container(container_name)
+            restart_span.set_attribute("restart.success", restart_result["success"])
+            if not restart_result["success"]:
+                restart_span.set_status(
+                    trace.Status(trace.StatusCode.ERROR, "Container restart failed")
+                )
+
+        # NEW: record the final outcome on the parent span
+        span.set_attribute("remediation.changed", True)
+        span.set_attribute("remediation.outcome", "applied")
+        span.set_attribute("remediation.restart_success", restart_result["success"])
+
+        if restart_result["success"]:
+            message = (
+                f"Remediation applied successfully.\n"
+                f"Changed {recipe['field']} from {preview['current_value']} "
+                f"to {recipe['value']} for {container_name}.\n"
+                f"Container restarted successfully.\n"
+                f"Run a new compliance scan to confirm the finding is resolved."
+            )
+        else:
+            message = (
+                f"Remediation applied to docker-compose.yml but container restart failed.\n"
+                f"Error: {restart_result['error']}\n"
+                f"Run 'docker compose up -d' manually to restart the container."
+            )
+
         return {
             "success": True,
-            "message": f"{container_name} is already compliant for rule '{rule_id}'. No changes needed.",
-            "changed": False
+            "changed": True,
+            "rule_id": rule_id,
+            "container": container_name,
+            "field": recipe["field"],
+            "old_value": preview["current_value"],
+            "new_value": recipe["value"],
+            "restart_success": restart_result["success"],
+            "message": message
         }
-
-    # Load the compose file fresh before making changes
-    compose_data = load_compose_file()
-
-    # Get the service name (strip the cg- prefix)
-    service_name = preview["service_name"]
-
-    # Get the recipe for this rule
-    recipe = REMEDIATION_MAP[rule_id]
-
-    # Apply the change to the service configuration
-    # This modifies the in-memory dictionary before writing back to disk
-    compose_data["services"][service_name][recipe["field"]] = recipe["value"]
-
-    # Write the modified configuration back to docker-compose.yml
-    save_compose_file(compose_data)
-
-    # Log the remediation to the audit log for compliance evidence
-    log_remediation_event(
-        rule_id=rule_id,
-        container=container_name,
-        field=recipe["field"],
-        old_value=preview["current_value"],
-        new_value=recipe["value"],
-        status="applied"
-    )
-
-    # Restart the container to apply the new configuration
-    restart_result = restart_container(container_name)
-
-    # Build the result message
-    if restart_result["success"]:
-        message = (
-            f"Remediation applied successfully.\n"
-            f"Changed {recipe['field']} from {preview['current_value']} "
-            f"to {recipe['value']} for {container_name}.\n"
-            f"Container restarted successfully.\n"
-            f"Run a new compliance scan to confirm the finding is resolved."
-        )
-    else:
-        message = (
-            f"Remediation applied to docker-compose.yml but container restart failed.\n"
-            f"Error: {restart_result['error']}\n"
-            f"Run 'docker compose up -d' manually to restart the container."
-        )
-
-    return {
-        "success": True,
-        "changed": True,
-        "rule_id": rule_id,
-        "container": container_name,
-        "field": recipe["field"],
-        "old_value": preview["current_value"],
-        "new_value": recipe["value"],
-        "restart_success": restart_result["success"],
-        "message": message
-    }
-
-
 def restart_container(container_name: str) -> dict[str, Any]:
     """
     Restart a specific container using docker compose.
