@@ -82,7 +82,8 @@ Respond with exactly this JSON structure:
 
 def classify_finding(
     client: anthropic.Anthropic,
-    finding: dict[str, Any]
+    finding: dict[str, Any],
+    temperature: float | None = None,
 ) -> dict[str, Any]:
     """Send a single finding to the Claude API and return the enriched analysis."""
     logger.info(f"Classifying finding: {finding['rule_id']} on {finding['container']}")
@@ -105,11 +106,15 @@ def classify_finding(
 
             start = time.time()  # mark when the API call begins
 
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            create_kwargs = {
+                "model" : MODEL,
+                "max_tokens" : 1024,
+                "messages" : [{"role" : "user","content":prompt}],
+            }
+
+            if temperature is not None:
+                create_kwargs["temperature"] = temperature
+            response = client.messages.create(**create_kwargs)           
 
             # CHANGED: compute duration AFTER the call returns
             duration = time.time() - start
