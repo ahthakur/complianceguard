@@ -1,0 +1,330 @@
+{
+  "default (1.0)": {
+    "runs": 3,
+    "model": "claude-haiku-4-5-20251001",
+    "llm_fields": {
+      "attack_scenario": {
+        "findings": 7,
+        "fully_stable": 0,
+        "fully_stable_pct": 0.0,
+        "mean_modal_agreement": 0.3333333333333333,
+        "mean_distinct_values": 3.0,
+        "max_distinct_values": 3
+      },
+      "business_risk": {
+        "findings": 7,
+        "fully_stable": 0,
+        "fully_stable_pct": 0.0,
+        "mean_modal_agreement": 0.3333333333333333,
+        "mean_distinct_values": 3.0,
+        "max_distinct_values": 3
+      },
+      "remediation_steps": {
+        "findings": 7,
+        "fully_stable": 0,
+        "fully_stable_pct": 0.0,
+        "mean_modal_agreement": 0.3333333333333333,
+        "mean_distinct_values": 3.0,
+        "max_distinct_values": 3
+      },
+      "pci_requirement_detail": {
+        "findings": 7,
+        "fully_stable": 0,
+        "fully_stable_pct": 0.0,
+        "mean_modal_agreement": 0.3333333333333333,
+        "mean_distinct_values": 3.0,
+        "max_distinct_values": 3
+      },
+      "estimated_fix_time": {
+        "findings": 7,
+        "fully_stable": 2,
+        "fully_stable_pct": 0.2857142857142857,
+        "mean_modal_agreement": 0.7142857142857143,
+        "mean_distinct_values": 1.8571428571428572,
+        "max_distinct_values": 3
+      }
+    },
+    "control_fields": {
+      "rule_id": {
+        "findings": 7,
+        "fully_stable": 7,
+        "fully_stable_pct": 1.0,
+        "mean_modal_agreement": 1.0,
+        "mean_distinct_values": 1.0,
+        "max_distinct_values": 1
+      },
+      "severity": {
+        "findings": 7,
+        "fully_stable": 7,
+        "fully_stable_pct": 1.0,
+        "mean_modal_agreement": 1.0,
+        "mean_distinct_values": 1.0,
+        "max_distinct_values": 1
+      },
+      "pci_control": {
+        "findings": 7,
+        "fully_stable": 7,
+        "fully_stable_pct": 1.0,
+        "mean_modal_agreement": 1.0,
+        "mean_distinct_values": 1.0,
+        "max_distinct_values": 1
+      },
+      "container": {
+        "findings": 7,
+        "fully_stable": 7,
+        "fully_stable_pct": 1.0,
+        "mean_modal_agreement": 1.0,
+        "mean_distinct_values": 1.0,
+        "max_distinct_values": 1
+      }
+    },
+    "raw": [
+      {
+        "cg-api-service::no-privileged-containers": {
+          "attack_scenario": "An attacker who gains code execution within the privileged container could directly access the host kernel and bypass all container isolation mechanisms, allowing them to escape the container, compromise other containers, access sensitive host resources, and potentially exfiltrate payment card data or install persistent backdoors. This elevated capability eliminates the security boundary between the application and the underlying infrastructure.",
+          "business_risk": "Running containers in privileged mode violates PCI-DSS-v4.0-7.2.1 requirements for least privilege access, creating a critical compliance violation that could result in failed audits, significant fines, and loss of payment processing authorization. A container escape could lead to direct access to cardholder data and complete infrastructure compromise.",
+          "remediation_steps": [
+            "Remove the 'privileged: true' flag from the cg-api-service container deployment configuration",
+            "Replace privileged mode with specific Linux capabilities required by the application using '--cap-add' for only necessary capabilities (e.g., NET_BIND_SERVICE) instead of granting all capabilities",
+            "Test the application with restricted capabilities and apply security context constraints including runAsNonRoot, readOnlyRootFilesystem, and appropriate seccomp/AppArmor profiles",
+            "Redeploy the container and verify functionality, then update container orchestration policies to enforce non-privileged mode across all workloads"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires implementation of the principle of least privilege by restricting access to system resources and data by processes to the minimum required, which prohibits running containers with all host kernel capabilities enabled through privileged mode.",
+          "estimated_fix_time": "1 hour"
+        },
+        "cg-data-processor::no-new-privileges": {
+          "attack_scenario": "An attacker who gains initial access to the container through a vulnerability in the application or a compromised dependency could exploit the absence of the no-new-privileges flag to escalate privileges using setuid/setgid binaries or kernel exploits. This would allow them to break out of the container's security context and potentially compromise the host system or access sensitive data processed by the container.",
+          "business_risk": "Without the no-new-privileges restriction, a compromised container can escalate to higher privilege levels, enabling unauthorized access to sensitive payment card data and system resources in violation of PCI-DSS segmentation and access control requirements. This increases the risk of data breaches and regulatory non-compliance penalties.",
+          "remediation_steps": [
+            "Update the container security context in the deployment manifest (Dockerfile, Kubernetes pod spec, or container runtime configuration) to include securityContext.allowPrivilegeEscalation: false",
+            "Alternatively, add the --security-opt=no-new-privileges flag to the docker run command or equivalent container orchestration configuration",
+            "Rebuild and redeploy the cg-data-processor container with the updated security configuration, then verify the setting is applied using container inspection tools"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that system configuration standards must include disabling unnecessary services and functions; the no-new-privileges setting is a mandatory OS-level security hardening control to prevent privilege escalation.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-data-processor::read-only-root-filesystem": {
+          "attack_scenario": "An attacker who gains container access could modify system binaries, inject malicious code, or establish persistence by writing to the root filesystem. This allows them to execute unauthorized commands, escalate privileges, or maintain backdoor access even after container restart.",
+          "business_risk": "A writable root filesystem increases the blast radius of container compromises and violates PCI-DSS requirements for secure configuration management, potentially leading to compliance failures and data breach exposure affecting cardholder data.",
+          "remediation_steps": [
+            "Add 'securityContext.readOnlyRootFilesystem: true' to the cg-data-processor container specification in the deployment manifest",
+            "Create emptyDir volumes for any application paths requiring write access (e.g., /tmp, /var/tmp, application cache directories)",
+            "Mount these emptyDir volumes to the container at the necessary paths and update application configuration to use these writable locations",
+            "Test the container to ensure all functionality works correctly with a read-only root filesystem before deploying to production"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that all system components be configured securely with only necessary services, ports, and protocols enabled; a writable root filesystem increases unnecessary write permissions that violate secure configuration principles.",
+          "estimated_fix_time": "1 hour"
+        },
+        "cg-data-processor::drop-all-capabilities": {
+          "attack_scenario": "An attacker exploiting a vulnerability in the cg-data-processor application could leverage the unrestricted Linux capabilities to perform privilege escalation attacks, such as modifying kernel parameters, accessing raw network sockets, or mounting filesystems. With all capabilities intact, the attacker could break out of container isolation and compromise the host system or adjacent containers.",
+          "business_risk": "This configuration violates PCI-DSS-v4.0-7.2.1 requirement to implement least privilege access controls, creating a compliance violation that could result in failed audits, fines, and loss of payment card processing authorization. An exploited container with full capabilities could lead to unauthorized access to cardholder data and other sensitive systems.",
+          "remediation_steps": [
+            "Update the container security policy or pod specification to add 'securityContext.capabilities.drop: [ALL]' to drop all Linux capabilities",
+            "Verify the application functionality after dropping all capabilities and add back only explicitly required capabilities using 'securityContext.capabilities.add' if needed",
+            "Rebuild and redeploy the container image with the updated security configuration to the cg-data-processor deployment"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that access control mechanisms restrict users to only the minimum required privileges to perform their job functions; dropping all Linux capabilities enforces the principle of least privilege at the container level.",
+          "estimated_fix_time": "30 minutes"
+        },
+        "cg-legacy-service::no-new-privileges": {
+          "attack_scenario": "An attacker who gains code execution within the container (via vulnerability exploitation or supply chain compromise) could escalate privileges by leveraging setuid binaries or kernel exploits, since the no-new-privileges flag is not enforced. This allows privilege escalation from a lower-privileged container process to potentially root access, enabling lateral movement to the host system or other containers.",
+          "business_risk": "Without the no-new-privileges restriction, a compromised container can escalate to root privileges and breach the isolation boundary, leading to unauthorized access to sensitive payment card data and violating PCI-DSS security controls. This creates compliance violations, potential data breach liability, and failure of required security assessments.",
+          "remediation_steps": [
+            "Add the securityContext.allowPrivilegeEscalation: false field to the cg-legacy-service container specification in the Pod/Deployment manifest",
+            "Alternatively, set the no-new-privileges flag in the container runtime security options or add --security-opt=no-new-privileges:true to Docker/containerd configurations",
+            "Deploy the updated configuration and verify the setting is active by inspecting the running container's security context using 'docker inspect' or 'kubectl describe pod'"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that all system components must be hardened and configured with security settings that restrict unnecessary access and functionality, including disabling privilege escalation in containerized environments.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-legacy-service::read-only-root-filesystem": {
+          "attack_scenario": "An attacker who gains code execution within the cg-legacy-service container can modify system binaries, inject malware, or install persistence mechanisms on the writable root filesystem. These modifications would survive container restarts and could be used to establish long-term access or pivot to other systems on the network.",
+          "business_risk": "A compromised container with write access to the root filesystem creates a compliance violation of PCI-DSS-v4.0-2.2.1 requirements for secure configuration standards. This exposes the organization to potential data breaches, regulatory fines, and audit failures during PCI-DSS assessments.",
+          "remediation_steps": [
+            "Add securityContext.readOnlyRootFilesystem: true to the cg-legacy-service container specification in the deployment manifest",
+            "Identify and create emptyDir volumes for any runtime-required writable paths (e.g., /tmp, /var/log, /var/cache) and mount them as temporary filesystems",
+            "Test the application thoroughly in a staging environment to ensure all required write operations are directed to mounted volumes, then deploy to production"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that configuration standards define security settings for system components, including enforcing read-only root filesystems to reduce the attack surface and prevent unauthorized modification of system files.",
+          "estimated_fix_time": "2-4 hours"
+        },
+        "cg-legacy-service::drop-all-capabilities": {
+          "attack_scenario": "An attacker who gains code execution inside the container can exploit retained Linux capabilities (such as CAP_SYS_ADMIN, CAP_NET_ADMIN, or CAP_SYS_PTRACE) to escalate privileges, escape the container isolation, or modify host kernel parameters. This allows lateral movement to the host system or other containers sharing the same kernel.",
+          "business_risk": "Failure to drop all capabilities violates PCI-DSS requirement for least privilege access controls, increasing the blast radius of any container compromise and enabling potential cardholder data exfiltration or system-wide breach. This creates a critical compliance gap that could result in audit failures and regulatory penalties.",
+          "remediation_steps": [
+            "Update the container security context in the deployment manifest to add 'securityContext.capabilities.drop: [\"ALL\"]'",
+            "Verify the cg-legacy-service Dockerfile or pod specification explicitly drops all capabilities and only adds back specific required capabilities if necessary",
+            "Test the container with the applied security context to ensure all required functionality remains operational"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that access control mechanisms restrict user and process access to system resources based on the principle of least privilege, which includes dropping unnecessary Linux capabilities from containerized processes.",
+          "estimated_fix_time": "30 minutes"
+        }
+      },
+      {
+        "cg-api-service::no-privileged-containers": {
+          "attack_scenario": "An attacker who gains code execution within the privileged container can access the host kernel and escape the container boundary to compromise the entire host system and other containers. With privileged mode enabled, the attacker can mount the host filesystem, modify kernel parameters, and pivot to adjacent systems on the network without requiring additional privilege escalation techniques.",
+          "business_risk": "Running containers in privileged mode violates PCI-DSS requirement 7.2.1 by granting excessive system privileges that enable container escape and lateral movement, potentially exposing cardholder data environments to unauthorized access. This misconfiguration creates a critical compliance violation that could result in failed PCI-DSS audits, substantial fines, and mandatory re-certification requirements.",
+          "remediation_steps": [
+            "Remove the 'privileged: true' flag from the cg-api-service container deployment manifest or docker-compose configuration",
+            "If specific capabilities are required, replace privileged mode with granular Linux capability assignments using the 'capabilities' field (e.g., only add CAP_NET_BIND_SERVICE if needed)",
+            "Redeploy the container with the updated configuration and verify functionality without privileged mode access"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that access to system components must be restricted based on the principle of least privilege; running containers in privileged mode violates this by granting unnecessary elevated permissions beyond what the application requires.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-data-processor::no-new-privileges": {
+          "attack_scenario": "An attacker who gains code execution within the container through a vulnerable application could exploit this misconfiguration to escalate privileges by leveraging setuid binaries or kernel vulnerabilities that would normally be blocked by the no-new-privileges flag. This allows the attacker to break out of container isolation and potentially compromise the host system or other containers.",
+          "business_risk": "Without the no-new-privileges restriction, a compromised container can escalate to root privileges and breach PCI-DSS requirement 2.2.1 which mandates implementation of strong access control measures. This creates exposure to cardholder data theft and violates mandatory security configuration standards.",
+          "remediation_steps": [
+            "Update the container security context in the deployment manifest to include securityContext.allowPrivilegeEscalation: false",
+            "Alternatively, add --security-opt=no-new-privileges:true to the container runtime configuration or Docker/Podman launch command",
+            "Rebuild and redeploy the cg-data-processor container with the updated security configuration",
+            "Verify the remediation by confirming the container is running with no-new-privileges flag enabled"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires all system components to have security configurations that restrict functionality to necessary services only, and the no-new-privileges flag is a required control to prevent privilege escalation within containerized environments.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-data-processor::read-only-root-filesystem": {
+          "attack_scenario": "An attacker who gains code execution within the container (via a vulnerability or supply chain attack) can modify system binaries, inject malicious libraries, or install persistence mechanisms on the writable root filesystem. These modifications would survive container restarts and could be used to exfiltrate data from the data-processor container or pivot to other systems.",
+          "business_risk": "This configuration violates PCI-DSS requirements for secure system configuration and increases the blast radius of any application vulnerability, potentially leading to data compromise affecting cardholder data and PCI-DSS audit failures.",
+          "remediation_steps": [
+            "Update the container deployment manifest (Dockerfile or Kubernetes pod spec) to add 'securityContext.readOnlyRootFilesystem: true'",
+            "Identify required writable paths (typically /tmp, /var/tmp, /var/run) and mount them as separate emptyDir or tmpfs volumes",
+            "Test the application thoroughly to ensure it functions correctly with a read-only root filesystem",
+            "Deploy the updated container image to your registry and redeploy affected container instances"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that all system components are configured securely according to vendor recommendations; read-only root filesystems are a fundamental hardening control to prevent unauthorized modification of system files and binaries.",
+          "estimated_fix_time": "1-2 hours"
+        },
+        "cg-data-processor::drop-all-capabilities": {
+          "attack_scenario": "An attacker who gains code execution within the cg-data-processor container can exploit retained Linux capabilities (such as CAP_SYS_ADMIN, CAP_NET_ADMIN, or CAP_DAC_OVERRIDE) to escalate privileges, escape container isolation, or manipulate network traffic. This allows lateral movement to the host system or other containers, potentially compromising cardholder data stored or processed by the application.",
+          "business_risk": "Failure to drop all capabilities violates PCI-DSS-v4.0-7.2.1 requirements for least privilege access and creates a critical security gap that exposes cardholder data to container escape and privilege escalation attacks. This non-compliance prevents PCI-DSS certification and creates regulatory liability and potential breach exposure.",
+          "remediation_steps": [
+            "Modify the container security context in the Kubernetes Pod or Docker configuration to add 'securityContext.capabilities.drop: [ALL]'",
+            "Verify the change is applied by running 'docker inspect' or 'kubectl describe pod' to confirm all capabilities are dropped",
+            "Test the cg-data-processor container to ensure application functionality is unaffected after dropping all capabilities, adding back only the minimal required capabilities if needed"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that users and processes are limited to the minimum set of required privileges, which includes dropping all unnecessary Linux capabilities from containers to prevent privilege escalation.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-legacy-service::no-new-privileges": {
+          "attack_scenario": "An attacker who gains initial access to the container through a vulnerability in the application can exploit setuid/setgid binaries or capability escalation to elevate privileges to root or other users. Without the no-new-privileges flag, privilege escalation attacks become viable even if the container initially runs as a non-root user, allowing the attacker to compromise the entire container and potentially pivot to the host system.",
+          "business_risk": "This misconfiguration violates PCI-DSS security hardening requirements and increases the risk of container escape and lateral movement within the infrastructure. A compromised container with elevated privileges could lead to data breach, unauthorized access to cardholder data, and significant compliance violations resulting in fines and loss of payment processing certification.",
+          "remediation_steps": [
+            "Update the container's security context in the deployment manifest to include 'securityContext.noNewPrivileges: true'",
+            "Rebuild and redeploy the cg-legacy-service container with the security option applied",
+            "Verify the remediation by running 'docker inspect cg-legacy-service' and confirming 'NoNewPrivileges: true' in the output"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that all system components must be configured to prevent unnecessary and insecure services, protocols, and daemons; the no-new-privileges setting prevents privilege escalation through setuid/setgid binaries, enforcing secure default container behavior.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-legacy-service::read-only-root-filesystem": {
+          "attack_scenario": "An attacker who gains code execution within the container could modify system binaries, install malware, or inject persistence mechanisms into the writable root filesystem. These modifications would survive container restarts and could propagate across the container orchestration platform, compromising the entire application stack.",
+          "business_risk": "A compromised container with writable root filesystem violates PCI-DSS requirements for system hardening and creates audit findings that could impact compliance certification. This configuration increases the blast radius of any container breach, potentially affecting payment card data security and resulting in compliance violations or failed audits.",
+          "remediation_steps": [
+            "Add 'securityContext.readOnlyRootFilesystem: true' to the pod/container specification in the deployment manifest",
+            "Identify required writable paths (e.g., /tmp, /var/log) and mount emptyDir or persistent volumes for those specific directories",
+            "Test the application thoroughly in a staging environment to ensure it functions correctly with a read-only root filesystem",
+            "Deploy the updated configuration to production and verify the container status shows the read-only constraint enforced"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that configuration standards address the security of systems and services, including implementing read-only root filesystems to prevent unauthorized modification of system files and enforce the principle of least privilege.",
+          "estimated_fix_time": "1 hour"
+        },
+        "cg-legacy-service::drop-all-capabilities": {
+          "attack_scenario": "An attacker who gains code execution within the cg-legacy-service container can exploit retained Linux capabilities (such as CAP_SYS_ADMIN, CAP_NET_ADMIN, or CAP_SYS_MODULE) to escalate privileges, modify kernel parameters, or escape the container to compromise the host system. This allows lateral movement and access to other containers or sensitive data on the underlying infrastructure.",
+          "business_risk": "The container retains unnecessary Linux capabilities that violate PCI-DSS privilege minimization requirements, increasing the blast radius of any container compromise and potentially enabling attackers to access cardholder data or payment systems. Non-compliance with PCI-DSS-v4.0-7.2.1 creates audit failures and exposes the organization to compliance penalties and potential breach liability.",
+          "remediation_steps": [
+            "Add 'securityContext.capabilities.drop: [\"ALL\"]' to the cg-legacy-service pod/container specification in the Kubernetes manifest or deployment configuration",
+            "Review and explicitly add only required capabilities using 'securityContext.capabilities.add' if the application requires specific capabilities (document the business justification)",
+            "Apply the updated manifest and restart the cg-legacy-service pods to enforce the capability restrictions"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that system components be configured to run with the minimum set of privileges necessary, and containers must drop all Linux capabilities by default to enforce least privilege access.",
+          "estimated_fix_time": "15 minutes"
+        }
+      },
+      {
+        "cg-api-service::no-privileged-containers": {
+          "attack_scenario": "An attacker who gains code execution within the cg-api-service container can leverage privileged mode access to escape the container, access the underlying host kernel, and compromise other containers or host resources. This allows lateral movement across the entire containerized infrastructure and potential data exfiltration from other services.",
+          "business_risk": "Running containers in privileged mode violates PCI-DSS access control requirements and significantly increases the blast radius of any container compromise, potentially exposing payment card data and customer information stored across multiple services. This creates material compliance violation risk and potential regulatory fines.",
+          "remediation_steps": [
+            "Remove the 'privileged: true' flag from the cg-api-service container deployment configuration (Docker/Kubernetes manifest)",
+            "Replace privileged mode with specific required Linux capabilities using 'cap_add' only for essential capabilities the application needs",
+            "Test the application thoroughly in a non-production environment to verify functionality without privileged mode",
+            "Deploy the updated configuration to production and verify all container functions operate correctly"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that access to system components is restricted based on need-to-know principle; running containers in privileged mode grants unnecessary elevated access that violates least privilege access controls.",
+          "estimated_fix_time": "1 hour"
+        },
+        "cg-data-processor::no-new-privileges": {
+          "attack_scenario": "An attacker who gains code execution within the container could exploit a privilege escalation vulnerability to obtain elevated privileges, as the no-new-privileges flag is not set to prevent privilege escalation. This allows an attacker to break out of container isolation and compromise the host system or access sensitive data with elevated permissions.",
+          "business_risk": "Without the no-new-privileges restriction, a compromised container can escalate privileges to attack the host infrastructure and other containers, potentially exposing payment card data in violation of PCI-DSS requirements. This creates significant compliance risk and potential for unauthorized access to cardholder data.",
+          "remediation_steps": [
+            "Update the container security context in the deployment manifest to include 'securityContext.noNewPrivileges: true'",
+            "Rebuild and redeploy the cg-data-processor container with the updated security settings",
+            "Verify the setting is applied by running 'docker inspect' or checking pod security policies to confirm no-new-privileges is enabled"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires configuring system security parameters to prevent misuse and exploitation, which includes implementing no-new-privileges to restrict privilege escalation in containerized environments.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-data-processor::read-only-root-filesystem": {
+          "attack_scenario": "An attacker who gains code execution within the container could modify system binaries, inject malicious libraries, or install persistence mechanisms on the writable root filesystem. This allows for privilege escalation, lateral movement, or post-exploitation activities that survive container restarts.",
+          "business_risk": "A writable root filesystem violates PCI-DSS requirements for system hardening and creates audit compliance gaps that could result in failed assessments or regulatory penalties. This misconfiguration significantly increases the blast radius of any container compromise affecting data security and integrity controls.",
+          "remediation_steps": [
+            "Add 'securityContext.readOnlyRootFilesystem: true' to the cg-data-processor container specification in the deployment manifest",
+            "Create an emptyDir volume mount for any application directories that require write access (e.g., /tmp, /var/tmp, application working directories)",
+            "Test the container in a staging environment to ensure the application functions correctly with read-only root filesystem and properly uses the mounted writable volumes",
+            "Deploy the updated container configuration to production and verify logs confirm successful operation"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires that systems must be configured to restrict and protect access to cardholder data; read-only root filesystems are a foundational hardening control that prevents unauthorized modification of critical system components.",
+          "estimated_fix_time": "30 minutes"
+        },
+        "cg-data-processor::drop-all-capabilities": {
+          "attack_scenario": "An attacker who gains code execution within the cg-data-processor container can exploit the presence of Linux capabilities (such as CAP_SYS_ADMIN, CAP_NET_ADMIN, or CAP_DAC_OVERRIDE) to escalate privileges, escape the container, or pivot to the host system. With these capabilities intact, even a compromised non-root process can perform privileged operations that would normally require root access.",
+          "business_risk": "Failure to drop all capabilities violates PCI-DSS-v4.0-7.2.1's principle of least privilege and significantly increases the blast radius of container compromise, potentially enabling unauthorized access to cardholder data and other sensitive systems. This misconfiguration exposes the organization to audit findings, potential compliance violations, and increased risk of data breach.",
+          "remediation_steps": [
+            "Update the container security context in the Kubernetes deployment manifest to include 'securityContext.capabilities.drop: [\"ALL\"]'",
+            "If specific capabilities are required by the application, only add them individually via 'securityContext.capabilities.add' after verification and documentation",
+            "Rebuild and redeploy the cg-data-processor container image with the updated security context"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that all unnecessary access rights and privileges be removed, and containers must drop all Linux capabilities by default to enforce the principle of least privilege.",
+          "estimated_fix_time": "30 minutes"
+        },
+        "cg-legacy-service::no-new-privileges": {
+          "attack_scenario": "An attacker who gains code execution within the container could exploit a privilege escalation vulnerability to obtain root privileges, since the no-new-privileges flag is not set to prevent privilege escalation. This would allow them to escape container isolation constraints and potentially compromise the host system or other containers sharing the same kernel.",
+          "business_risk": "Without the no-new-privileges restriction, a compromised application can escalate privileges to root, violating PCI-DSS requirements for least privilege access and increasing the risk of data breach, unauthorized access to cardholder data, and system compromise.",
+          "remediation_steps": [
+            "Add the no-new-privileges:true security option to the container's securityContext in the container runtime configuration or orchestration manifest",
+            "Update the cg-legacy-service container definition (Docker/Kubernetes/ECS) to include '--security-opt=no-new-privileges=true' or equivalent securityContext setting",
+            "Rebuild and redeploy the container, then verify the setting is applied using container inspection tools to confirm the observed value matches the declared requirement"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires configuration of system security parameters to prevent unauthorized access and enforce the principle of least privilege, which includes preventing privilege escalation within containerized environments.",
+          "estimated_fix_time": "15 minutes"
+        },
+        "cg-legacy-service::read-only-root-filesystem": {
+          "attack_scenario": "An attacker who gains code execution within the container can modify system binaries, install backdoors, or inject malicious scripts into the writable root filesystem to maintain persistence and escalate privileges. This allows the attacker to tamper with application logic and system utilities without detection, creating a persistent foothold even after container restart.",
+          "business_risk": "A writable root filesystem increases the blast radius of container compromises and enables attackers to modify application behavior undetected, violating PCI-DSS requirements for system integrity monitoring and configuration management. This creates audit trail gaps and regulatory non-compliance that could result in failed assessments and financial penalties.",
+          "remediation_steps": [
+            "Add 'securityContext.readOnlyRootFilesystem: true' to the pod or container specification in the deployment manifest",
+            "Create emptyDir volumes for any paths requiring write access (e.g., /tmp, /var/log) and mount them with readWrite permissions",
+            "Test the application to ensure all required write paths are properly configured before deploying to production",
+            "Update the deployment and verify the container restarts successfully with the read-only root filesystem enforced"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-2.2.1 requires configuration standards that must be enforced, including limiting system functionality to only necessary services; a writable root filesystem violates the principle of minimal configuration and increases the attack surface.",
+          "estimated_fix_time": "1 hour"
+        },
+        "cg-legacy-service::drop-all-capabilities": {
+          "attack_scenario": "An attacker who gains code execution within the cg-legacy-service container can exploit retained Linux capabilities (such as CAP_SYS_ADMIN, CAP_NET_ADMIN, or CAP_SYS_PTRACE) to escalate privileges, escape the container, or compromise the host system. This allows lateral movement across the Kubernetes cluster and potential access to other sensitive systems and data stores.",
+          "business_risk": "Failure to drop all capabilities violates PCI-DSS-v4.0-7.2.1 requirements for least privilege enforcement and increases the blast radius of any container compromise, potentially exposing cardholder data and leading to compliance violations and audit failures.",
+          "remediation_steps": [
+            "Update the cg-legacy-service container manifest to add 'securityContext.capabilities.drop: [\"ALL\"]' in the Pod or Deployment specification",
+            "Verify the configuration change with 'kubectl describe pod <pod-name>' to confirm all capabilities are dropped",
+            "Test the application functionality to ensure dropping all capabilities does not break required features, adding back only essential capabilities (e.g., CAP_NET_BIND_SERVICE) if necessary using 'securityContext.capabilities.add'",
+            "Redeploy the updated container and validate in a test environment before production rollout"
+          ],
+          "pci_requirement_detail": "PCI-DSS-v4.0-7.2.1 requires that system access be limited to only the access necessary for job function, which includes dropping all unnecessary Linux kernel capabilities from container processes to enforce least privilege.",
+          "estimated_fix_time": "15 minutes"
+        }
+      }
+    ]
+  }
+}
