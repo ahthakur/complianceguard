@@ -26,6 +26,7 @@ Phase 3 ── CLASSIFY ──── Claude AI enriches each finding:
         ▼
 Phase 4 ── REPORT ─────── Generates JSON + HTML + PDF audit evidence
                            SHA-256 tamper detection hash included
+                           Per-run LLM cost and token accounting
                            Exit code 1 for CI/CD integration
 
 Phase 5 ── REMEDIATE ──── Guided remediation via MCP server:
@@ -33,6 +34,8 @@ Phase 5 ── REMEDIATE ──── Guided remediation via MCP server:
                            Container restarted, audit log written
                            Re-scan confirms finding resolved
 ```
+
+Every phase is instrumented with OpenTelemetry traces and metrics.
 
 ---
 
@@ -52,6 +55,7 @@ complianceguard/
 │   ├── classifier.py            # Phase 3: Claude AI enrichment layer
 │   ├── reporter.py              # Phase 4: report orchestrator
 │   ├── remediator.py            # Phase 5: guided remediation engine
+│   ├── observability.py         # OpenTelemetry traces and metrics setup
 │   └── formatters/              # Output formatters (single responsibility)
 │       ├── json_formatter.py    # Machine-readable audit evidence
 │       ├── html_formatter.py    # Human-readable browser report
@@ -60,10 +64,20 @@ complianceguard/
 ├── mcp_server/                  # MCP server: Claude-queryable interface
 │   └── server.py                # Six tools exposing compliance data and remediation
 │
+├── eval/                        # Stability evaluation harness
+│   ├── stability_eval.py        # Measures run-to-run variance in model output
+│   └── results/                 # Recorded eval runs (raw JSON)
+│
+├── cg-observability-backend/    # Local LGTM stack for traces and metrics
+│   ├── collector/               # OpenTelemetry Collector config
+│   ├── grafana/                 # Provisioned dashboards and datasources
+│   ├── prometheus/              # Metrics storage
+│   └── tempo/                   # Trace storage
+│
 ├── reports/
 │   ├── _LastReport/             # Always contains the most recent run
 │   ├── _Archive/                # All previous runs archived here
-│   └── remediation-audit.log   # Append-only log of all applied remediations
+│   └── remediation-audit.log    # Append-only log of all applied remediations
 │
 └── docker-compose.yml           # Simulated infrastructure with intentional drift
 ```
@@ -115,6 +129,32 @@ Each finding is sent to Claude AI which returns structured analysis:
   "estimated_fix_time": "30 minutes"
 }
 ```
+
+The five fields above are the agent's entire model-generated surface. Everything else in a finding (rule ID, severity, PCI control, declared and observed values) is produced by deterministic policy evaluation in `evaluator.py`. That boundary matters: see [Design Decisions](#design-decisions).
+
+---
+
+## Cost and Token Accounting
+
+Every Claude API call records input tokens, output tokens, cache tokens, latency, and computed cost as OpenTelemetry span attributes and metrics. Each run prints an aggregate summary:
+
+```
+                    LLM Cost Summary
+╭──────────────────────────┬───────────────────────────╮
+│ Metric                   │                     Value │
+├──────────────────────────┼───────────────────────────┤
+│ Model                    │ claude-haiku-4-5-20251001 │
+│ API calls                │                         7 │
+│ Input tokens             │                     2,001 │
+│ Output tokens            │                     2,502 │
+│ Total cost               │                   $0.0145 │
+│ Cost per finding         │                  $0.00207 │
+│ Output share of cost     │                     86.2% │
+│ Classification wall time │                     27.6s │
+╰──────────────────────────┴───────────────────────────╯
+```
+
+Cost per finding is the useful unit, since it stays comparable across runs with different finding counts.
 
 ---
 
@@ -180,13 +220,13 @@ This log is append-only and serves as a compliance evidence artifact.
 
 ### Connect to Claude Code
 
-Add this to `~/.claude.json`:
+Add this to `~/.claude.json`, pointing `command` at the interpreter inside your virtual environment:
 
 ```json
 {
   "mcpServers": {
     "complianceguard": {
-      "command": "/opt/homebrew/Cellar/python@3.11/3.11.15/Frameworks/Python.framework/Versions/3.11/bin/python3.11",
+      "command": "/path/to/complianceguard/.venv/bin/python",
       "args": ["-m", "mcp_server.server"],
       "cwd": "/path/to/complianceguard",
       "env": {
@@ -221,6 +261,8 @@ SHA-256: 75b39187c2eb9ec2d649462014b609ec9aff84c601e12fa112cd1b28daba1c80
 Verify: recompute SHA-256 of report content (excluding hash field) and compare
 ```
 
+This proves a report was not altered after generation. It does not prove that the same infrastructure would produce the same report twice. That is a separate question, addressed in [Design Decisions](#design-decisions).
+
 ---
 
 ## Quick Start
@@ -228,7 +270,7 @@ Verify: recompute SHA-256 of report content (excluding hash field) and compare
 ### Prerequisites
 
 - Docker Desktop
-- Python 3.9+
+- Python 3.12+
 - Anthropic API key (get one at console.anthropic.com)
 
 ### Setup
@@ -238,8 +280,12 @@ Verify: recompute SHA-256 of report content (excluding hash field) and compare
 git clone https://github.com/ahthakur/complianceguard.git
 cd complianceguard
 
+# Create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
 # Install dependencies
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
@@ -249,9 +295,10 @@ cp .env.example .env
 docker compose up -d
 
 # Run the compliance agent
-export $(cat .env | grep -v '#' | xargs)
-python3 -m agent.main
+python -m agent.main
 ```
+
+The agent loads `.env` automatically via `python-dotenv`, so no manual export is needed.
 
 ### View Reports
 
@@ -261,6 +308,16 @@ open reports/_LastReport/*.html
 
 # Open the PDF report
 open reports/_LastReport/*.pdf
+```
+
+### Run the Stability Eval
+
+```bash
+# Quick check: 3 runs at the API default temperature
+python -m eval.stability_eval --runs 3 --temps default
+
+# Full comparison: 10 runs at default and at temperature 0
+python -m eval.stability_eval --runs 10 --temps default,0.0
 ```
 
 ---
@@ -276,13 +333,15 @@ The included `docker-compose.yml` spins up four containers with intentional misc
 | cg-legacy-service | No security hardening applied | Multiple HIGH and MEDIUM |
 | cg-audit-logger | Fully compliant baseline | Zero findings |
 
+Note that `apply_remediation` writes to `docker-compose.yml`. Applying a remediation permanently changes the fixture, so a later scan will report fewer findings than the table above. Restore the file from version control to reset the scenario.
+
 ---
 
 ## Report Output
 
 Each run produces three files in `reports/_LastReport/`:
 
-- **`CG-YYYYMMDD-HHMMSS.json`** Machine-readable audit evidence with full AI analysis
+- **`CG-YYYYMMDD-HHMMSS.json`** Machine-readable audit evidence with full AI analysis and cost accounting
 - **`CG-YYYYMMDD-HHMMSS.html`** Color-coded browser report with severity badges and findings table
 - **`CG-YYYYMMDD-HHMMSS.pdf`** Professional compliance document suitable for auditors
 
@@ -295,7 +354,7 @@ Previous reports are automatically moved to `reports/_Archive/` on each run.
 The agent exits with code `1` when violations are found and `0` when fully compliant:
 
 ```bash
-python3 -m agent.main
+python -m agent.main
 if [ $? -ne 0 ]; then
   echo "Compliance violations detected. Blocking deployment."
   exit 1
@@ -321,6 +380,31 @@ The MCP server layer decouples the compliance data from how it is consumed. Secu
 **Why SHA-256 hashing?**
 Compliance evidence must be tamper-evident. If a report can be modified after generation, it cannot be trusted as an audit artifact. The hash provides mathematical proof that the report content has not changed since it was produced.
 
+**How do you validate a non-deterministic agent?**
+
+Compliance evidence should be reproducible, but LLM output is not. So I measured how far from reproducible this agent actually is.
+
+`eval/stability_eval.py` runs the scan and evaluate phases once (both are deterministic Python, no API calls), then sends that frozen set of findings through the classifier ten times at each temperature setting and records every field of every result.
+
+Measured over ten runs against a seven-finding scan:
+
+| Field | Fully stable at default (1.0) | Fully stable at temperature 0 |
+|---|---|---|
+| `estimated_fix_time` | 1 of 7 (64% modal agreement) | 4 of 7 (84% modal agreement) |
+| `attack_scenario` | 0 of 7 | 2 of 7 |
+| `pci_requirement_detail` | 0 of 7 (10% agreement) | 1 of 7 (34% agreement) |
+| `rule_id`, `severity`, `pci_control` | 7 of 7 | 7 of 7 |
+
+Three conclusions came out of this:
+
+1. **The API defaults to temperature 1.0.** The original code never set it, so the agent shipped at maximum sampling variability. Setting `temperature=0` is a large, free improvement.
+
+2. **Temperature 0 is not determinism.** Three of seven findings still disagreed with themselves across ten identical requests. Anything that gates on exact output equality will be flaky no matter how the sampler is configured.
+
+3. **The compliance-critical fields were never at risk.** `rule_id`, `severity`, and `pci_control` are computed by `evaluator.py` from the YAML policy and never pass through the model. They measured 100% stable, by construction rather than by luck.
+
+That last point is the release gate. Deterministic fields are auditable and can be signed. Model-generated fields are advisory and should be labelled as such rather than presented as facts inside a hashed artifact. Validating an agent means knowing which of your outputs are which, and having measured the difference rather than assumed it.
+
 **Why separate formatters?**
 Each output format (JSON, HTML, PDF) is handled by a dedicated module following the single responsibility principle. Adding a new format means adding one file without touching existing code.
 
@@ -331,6 +415,10 @@ Standard Unix convention for security scanners. Enables CI/CD pipelines to treat
 
 ## Backlog
 
+- **Deterministic sampling by default:** Set `temperature=0` in the production classification path, and label model-generated fields as advisory in all three report formats
+- **Parallel classification:** Phase 3 currently classifies findings serially. The calls are independent and should run concurrently
+- **Deduplicate by rule:** Findings that share a rule ID receive near-identical analysis. Classifying once per unique rule would cut API calls substantially
+- **Immutable test fixture:** `apply_remediation` writes to the same `docker-compose.yml` the scanner reads, so remediation mutates the environment being measured. Remediation should target a generated copy
 - **Formatter refactor:** Move formatter classes into a proper plugin architecture
 - **Network and RBAC scanning:** Extend scanner and evaluator to cover network policy drift and RBAC permission drift (policy files already exist)
 - **Scheduled continuous monitoring:** Run the agent on a defined interval using the included schedule dependency
@@ -343,10 +431,11 @@ Standard Unix convention for security scanners. Enables CI/CD pipelines to treat
 
 | Component | Technology |
 |---|---|
-| Agent runtime | Python 3.9+ |
+| Agent runtime | Python 3.12+ |
 | Infrastructure simulation | Docker Compose |
-| AI classification | Anthropic Claude API (claude-3-5-haiku) |
-| MCP server | FastMCP (mcp 1.27.0) |
+| AI classification | Anthropic Claude API (claude-haiku-4-5-20251001) |
+| MCP server | FastMCP (mcp 2.0.0) |
+| Observability | OpenTelemetry (OTLP gRPC), Prometheus, Tempo, Grafana |
 | Policy format | YAML |
 | Terminal output | Rich |
 | HTML reports | Self-contained HTML/CSS |
