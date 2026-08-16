@@ -351,7 +351,14 @@ def run_compliance_scan() -> str:
 
 @mcp.tool()
 def preview_remediation(rule_id: str, container_name: str) -> str:
-    """...docstring unchanged..."""
+    """
+    Preview the exact change that would be made to fix a compliance finding.
+    This is a dry-run: no changes are applied to the infrastructure.
+    rule_id: the rule ID from the finding (e.g. no-privileged-containers, read-only-root-filesystem, drop-all-capabilities, no-new-privileges)
+    container_name: the container to fix (e.g. cg-data-processor, cg-legacy-service)
+    Returns a detailed diff showing exactly what would change in docker-compose.yml.
+    Use this before apply_remediation to review and approve the proposed change.
+    """
     with tracer.start_as_current_span(
         "mcp.preview_remediation",
         kind=trace.SpanKind.SERVER,
@@ -392,7 +399,11 @@ def preview_remediation(rule_id: str, container_name: str) -> str:
 def apply_remediation(rule_id: str, container_name: str) -> str:
     """
     Apply an approved remediation to fix a compliance finding.
-    ...docstring unchanged...
+    Only call this after reviewing the dry-run output from preview_remediation.
+    rule_id: the rule ID to fix (e.g. no-privileged-containers, read-only-root-filesystem, drop-all-capabilities, no-new-privileges)
+    container_name: the container to fix (e.g. cg-data-processor, cg-legacy-service)
+    This will modify docker-compose.yml and restart the affected container.
+    Every remediation is logged to reports/remediation-audit.log for compliance evidence.
     """
     # NEW: span representing the MCP tool invocation by Claude
     with tracer.start_as_current_span(
