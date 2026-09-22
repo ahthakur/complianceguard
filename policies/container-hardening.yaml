@@ -1,0 +1,41 @@
+apiVersion: complianceguard/v1
+kind: HardeningBaseline
+metadata:
+  name: container-hardening-baseline
+  version: "1.0.0"
+  description: >
+    Desired state for all managed containers. The remediator reads this file
+    to generate fixes for docker-compose.yml. Separate from audit rules
+    (container-policy.yaml, network-policy.yaml) so that policy teams own
+    what to CHECK and platform teams own what to FIX TO.
+
+defaults:
+  privileged: false
+  read_only: true
+  security_opt:
+    - "no-new-privileges:true"
+  cap_drop:
+    - "ALL"
+  cap_add: []
+  network_mode: "default"
+  pid_mode: ""
+  memory_limit: "256m"
+  mounts_deny:
+    - "/var/run/docker.sock"
+  sensitive_ports_deny:
+    - 3306
+    - 5432
+    - 6379
+    - 27017
+    - 9200
+    - 11211
+
+overrides:
+  api-service:
+    memory_limit: "256m"
+  data-processor:
+    memory_limit: "512m"
+  legacy-service:
+    memory_limit: "128m"
+  audit-logger:
+    memory_limit: "128m"

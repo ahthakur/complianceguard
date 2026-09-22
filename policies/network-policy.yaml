@@ -2,15 +2,18 @@ apiVersion: complianceguard/v1
 kind: NetworkPolicy
 metadata:
   name: network-security-baseline
-  version: "1.0.0"
+  version: "2.0.0"
   pci_controls:
     - "PCI-DSS-v4.0-1.3.1"
     - "PCI-DSS-v4.0-1.3.2"
+    - "PCI-DSS-v4.0-1.4.1"
 
 rules:
   - id: no-host-network
     description: "Containers must not use host network mode"
     severity: CRITICAL
+    cwe: "CWE-290"
+    cwe_rationale: "Host network mode bypasses container network isolation, enabling IP spoofing and ARP poisoning — the same class of authentication bypass by spoofing seen in Arista advisories"
     check:
       field: network_mode
       operator: not_equals
@@ -18,7 +21,46 @@ rules:
     pci_control: "PCI-DSS-v4.0-1.3.1"
 
   - id: no-exposed-sensitive-ports
-    description: "Sensitive ports must not be exposed publicly"
+    description: "Database and cache ports must not be exposed to the host"
     severity: HIGH
-    sensitive_ports: [22, 3306, 5432, 6379, 27017]
+    cwe: "CWE-287"
+    cwe_rationale: "Exposing database/cache ports (Redis, Postgres, MySQL, MongoDB) without network-level access control mirrors the improper authentication patterns found in Arista EOS management plane advisories"
+    sensitive_ports: [3306, 5432, 6379, 27017, 9200, 11211]
+    check:
+      field: exposed_ports
+      operator: not_contains_any
+      value: [3306, 5432, 6379, 27017, 9200, 11211]
     pci_control: "PCI-DSS-v4.0-1.3.2"
+
+  - id: no-docker-socket-mount
+    description: "Containers must not mount the Docker daemon socket"
+    severity: CRITICAL
+    cwe: "CWE-732"
+    cwe_rationale: "Mounting /var/run/docker.sock grants unrestricted Docker API access — equivalent to root on the host. Maps to CWE-732 incorrect permission assignment seen in Arista file permission advisories"
+    check:
+      field: mounts
+      operator: not_contains
+      value: "/var/run/docker.sock"
+    pci_control: "PCI-DSS-v4.0-7.2.1"
+
+  - id: no-host-pid
+    description: "Containers must not share the host PID namespace"
+    severity: HIGH
+    cwe: "CWE-269"
+    cwe_rationale: "Host PID namespace lets a container see and signal all host processes, breaking process isolation — maps to improper privilege management patterns in Arista advisories"
+    check:
+      field: pid_mode
+      operator: not_equals
+      value: "host"
+    pci_control: "PCI-DSS-v4.0-7.2.1"
+
+  - id: memory-limit-required
+    description: "Containers must have a memory limit configured"
+    severity: MEDIUM
+    cwe: "CWE-400"
+    cwe_rationale: "Unbounded memory allows a single compromised container to exhaust host resources — maps to uncontrolled resource consumption patterns seen in Arista DoS advisories"
+    check:
+      field: memory_limit
+      operator: greater_than
+      value: 0
+    pci_control: "PCI-DSS-v4.0-2.2.1"

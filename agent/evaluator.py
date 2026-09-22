@@ -5,77 +5,66 @@ compares them against the scanner output (observed state), and produces a struct
 findings for the classifier to analyze.
 """
 
-# Standard library imports
-import logging                      # For recording what the evaluator does during each run
-import os                           # For reading environment variables and building file paths
-from typing import Any              # Type hint: Any means a variable can hold any data type
+import logging
+import os
+from typing import Any
 
-# Third-party imports
-import yaml                         # PyYAML: parses YAML policy files into Python dictionaries
+import yaml
 
-# Create a logger for this module
-# Using __name__ (agent.evaluator) ties log messages to this specific module
 logger = logging.getLogger(__name__)
 
-# Read the policy directory path from environment variable
-# Defaults to ./policies if the environment variable is not set
-# This makes the path configurable without changing code
 POLICY_DIR = os.getenv("POLICY_DIR", "./policies")
 
 
 def load_policy(filename: str) -> dict[str, Any]:
-    """
-    Load and parse a single YAML policy file into a Python dictionary.
-    filename: the name of the file inside the POLICY_DIR folder (e.g. container-policy.yaml)
-    Returns a dictionary representing the full policy document.
-    Raises FileNotFoundError if the policy file does not exist.
-    """
-    # Build the full file path by joining the policy directory and filename
-    # os.path.join handles the slash between directory and filename correctly on all platforms
+    """Load and parse a single YAML policy file."""
     path = os.path.join(POLICY_DIR, filename)
-
-    # Log that we are loading this policy file so there is an audit trail
     logger.info(f"Loading policy: {path}")
-
-    # Open the file and parse it as YAML
-    # 'r' means read-only mode, we never modify policy files
     with open(path, "r") as f:
-        # yaml.safe_load parses the YAML content into a Python dict
-        # safe_load is used instead of load() for security: it prevents
-        # execution of arbitrary Python objects embedded in YAML
         return yaml.safe_load(f)
 
 
 def check_field(observed_value: Any, operator: str, expected_value: Any) -> bool:
     """
     Evaluate a single policy rule check against an observed container value.
-    observed_value: what the scanner actually found on the container
-    operator: the comparison type from the policy YAML (equals, not_equals, contains)
-    expected_value: what the policy says the value should be
-    Returns True if the container PASSES the check, False if it FAILS (drift detected).
+    Returns True if the container PASSES the check, False if it FAILS.
     """
     if operator == "equals":
-        # Direct equality check: observed must exactly match expected
-        # Example: privileged must equal false
         return observed_value == expected_value
 
     elif operator == "not_equals":
-        # Inequality check: observed must NOT match expected
-        # Example: network_mode must not equal "host"
         return observed_value != expected_value
 
     elif operator == "contains":
-        # Membership check: expected value must appear somewhere in the observed list
-        # Example: security_opt list must contain "no-new-privileges:true"
-        # We check if observed_value is a list first to avoid errors on non-list fields
         if isinstance(observed_value, list):
             return expected_value in observed_value
-        # If the observed value is not a list, the check automatically fails
-        # because we cannot check membership in a non-list
         return False
 
-    # If an unknown operator is encountered, log a warning and return False
-    # This is a safe default: unknown check = assume non-compliant
+    elif operator == "not_contains":
+        if isinstance(observed_value, list):
+            return expected_value not in observed_value
+        if isinstance(observed_value, str):
+            return expected_value not in observed_value
+        return True
+
+    elif operator == "not_contains_any":
+        if isinstance(observed_value, list):
+            return not any(v in observed_value for v in expected_value)
+        return True
+
+    elif operator == "is_empty":
+        if expected_value:
+            return observed_value is None or observed_value == [] or observed_value == ""
+        return observed_value is not None and observed_value != [] and observed_value != ""
+
+    elif operator == "greater_than":
+        if observed_value is None:
+            return False
+        try:
+            return float(observed_value) > float(expected_value)
+        except (TypeError, ValueError):
+            return False
+
     logger.warning(f"Unknown operator: {operator}")
     return False
 
@@ -85,134 +74,98 @@ def evaluate_containers(
     policy: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """
-    Compare each observed container against every rule in the container policy.
-    observed_containers: list of container state dicts from the scanner
-    policy: the parsed container-policy.yaml as a Python dictionary
-    Returns a list of finding dictionaries, one per violation found.
-    Each finding contains all the information the classifier and reporter need.
+    Compare each observed container against every rule in a policy.
+    Works for both container-policy and network-policy rules.
     """
-    findings = []                           # Empty list to collect all violations found
+    findings = []
+    rules = policy.get("rules", [])
 
-    # Extract the list of rules from the policy document
-    # Each rule is a dict with id, description, severity, check, and pci_control fields
-    rules = policy.get("rules", [])         # Default to empty list if no rules defined
-
-    # Loop through every managed container the scanner found
     for container in observed_containers:
-
-        # Get the container name for use in finding messages
         name = container["name"]
 
-        # Check if the container is currently running
-        # We still evaluate stopped containers because their config may still be non-compliant
-        # and knowing a managed container is not running is itself a finding
         if not container["running"]:
-            # Create a finding for the non-running container
-            # This catches containers that crashed or were stopped unexpectedly
             findings.append({
-                "container": name,                          # Which container has the issue
-                "rule_id": "container-not-running",        # Unique identifier for this finding type
+                "container": name,
+                "rule_id": "container-not-running",
                 "description": f"Managed container {name} is not running (status: {container['status']})",
-                "severity": "HIGH",                        # Non-running managed containers are high severity
-                "pci_control": "PCI-DSS-v4.0-2.2.1",     # System component availability requirement
-                "declared": "running",                     # What we expected: the container should be up
-                "observed": container["status"],           # What we found: exited, restarting, etc.
-                "compliant": False                         # This is definitionally a violation
+                "severity": "HIGH",
+                "pci_control": "PCI-DSS-v4.0-2.2.1",
+                "declared": "running",
+                "observed": container["status"],
+                "compliant": False
             })
 
-        # Now evaluate every policy rule against this container's observed configuration
         for rule in rules:
-
-            # Extract the check definition from the rule
-            # check contains: field (what to look at), operator (how to compare), value (what to expect)
             check = rule.get("check", {})
-
-            # Get the field name from the check definition
-            # Example: "privileged", "read_only", "security_opt"
             field = check.get("field")
-
-            # Look up the actual observed value for this field from the scanner output
-            # If the field is not in the scanner output, default to None
             observed_value = container.get(field)
-
-            # Get the comparison operator from the check definition
             operator = check.get("operator")
-
-            # Get the expected value from the check definition
             expected_value = check.get("value")
 
-            # Run the check: does the observed value pass or fail this rule?
             passed = check_field(observed_value, operator, expected_value)
 
             if not passed:
-                # The container failed this rule: create a finding
-                findings.append({
-                    "container": name,                      # Which container failed
-                    "rule_id": rule["id"],                  # The specific rule that was violated
-                    "description": rule["description"],     # Human-readable description of the rule
-                    "severity": rule["severity"],           # CRITICAL, HIGH, or MEDIUM from policy
-                    "pci_control": rule["pci_control"],     # Which PCI-DSS v4.0 control this maps to
-                    "declared": expected_value,             # What the policy says it should be
-                    "observed": observed_value,             # What the scanner actually found
-                    "compliant": False                      # This container failed this check
-                })
+                finding = {
+                    "container": name,
+                    "rule_id": rule["id"],
+                    "description": rule["description"],
+                    "severity": rule["severity"],
+                    "pci_control": rule.get("pci_control", ""),
+                    "declared": expected_value,
+                    "observed": observed_value,
+                    "compliant": False
+                }
+                if rule.get("cwe"):
+                    finding["cwe"] = rule["cwe"]
+                    finding["cwe_rationale"] = rule.get("cwe_rationale", "")
 
-                # Log the violation for the audit trail
+                findings.append(finding)
                 logger.warning(
                     f"VIOLATION: {name} failed rule '{rule['id']}' "
                     f"(expected {field}={expected_value}, got {observed_value})"
                 )
             else:
-                # The container passed this rule: log it but do not create a finding
                 logger.info(f"PASS: {name} passed rule '{rule['id']}'")
 
-    return findings                         # Return all findings for the classifier to process
+    return findings
 
 
 def evaluate_all(observed_state: dict[str, Any]) -> dict[str, Any]:
     """
-    Run the full policy evaluation across all resource types.
-    observed_state: the full output from scanner.scan_all()
-    Returns a structured evaluation result with all findings and summary statistics.
-    This is the main entry point called by main.py.
+    Run full policy evaluation across all policy files.
+    Loads both container-policy.yaml and network-policy.yaml.
     """
     logger.info("Starting policy evaluation...")
 
-    # Load the container security policy from the policies directory
-    # This is the declared state: what every managed container should look like
+    containers = observed_state["containers"]
+    all_findings = []
+
     container_policy = load_policy("container-policy.yaml")
+    all_findings.extend(evaluate_containers(containers, container_policy))
 
-    # Run container evaluation: compare observed containers against declared policy
-    container_findings = evaluate_containers(
-        observed_state["containers"],       # Observed state from the scanner
-        container_policy                    # Declared state from the policy file
-    )
+    try:
+        network_policy = load_policy("network-policy.yaml")
+        all_findings.extend(evaluate_containers(containers, network_policy))
+    except FileNotFoundError:
+        logger.warning("network-policy.yaml not found, skipping network evaluation")
 
-    # Combine all findings from all resource types into one list
-    # Structured as a list so network and RBAC findings can be added here later
-    all_findings = container_findings
+    total = len(all_findings)
+    critical = sum(1 for f in all_findings if f["severity"] == "CRITICAL")
+    high = sum(1 for f in all_findings if f["severity"] == "HIGH")
+    medium = sum(1 for f in all_findings if f["severity"] == "MEDIUM")
 
-    # Calculate summary statistics for the report header
-    total = len(all_findings)                                               # Total violations found
-    critical = sum(1 for f in all_findings if f["severity"] == "CRITICAL") # Count critical violations
-    high = sum(1 for f in all_findings if f["severity"] == "HIGH")         # Count high violations
-    medium = sum(1 for f in all_findings if f["severity"] == "MEDIUM")     # Count medium violations
-
-    # Log the evaluation summary
     logger.info(
         f"Evaluation complete: {total} findings "
         f"(CRITICAL: {critical}, HIGH: {high}, MEDIUM: {medium})"
     )
 
-    # Build and return the full evaluation result dictionary
-    # This is the input the classifier and reporter will consume
     return {
-        "findings": all_findings,           # Full list of all violation findings
+        "findings": all_findings,
         "summary": {
-            "total_findings": total,        # Total number of violations across all containers
-            "critical": critical,           # Number of critical severity violations
-            "high": high,                   # Number of high severity violations
-            "medium": medium,               # Number of medium severity violations
-            "containers_scanned": len(observed_state["containers"]),    # Total containers checked
+            "total_findings": total,
+            "critical": critical,
+            "high": high,
+            "medium": medium,
+            "containers_scanned": len(containers),
         }
     }

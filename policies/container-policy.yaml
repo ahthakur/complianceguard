@@ -2,7 +2,7 @@ apiVersion: complianceguard/v1
 kind: ContainerPolicy
 metadata:
   name: container-security-baseline
-  version: "1.0.0"
+  version: "2.0.0"
   pci_controls:
     - "PCI-DSS-v4.0-7.2.1"
     - "PCI-DSS-v4.0-2.2.1"
@@ -11,6 +11,8 @@ rules:
   - id: no-privileged-containers
     description: "Containers must not run in privileged mode"
     severity: CRITICAL
+    cwe: "CWE-250"
+    cwe_rationale: "Privileged mode grants full host kernel access — execution with unnecessary privileges amplifies every other vulnerability class including command injection (CWE-78)"
     check:
       field: privileged
       operator: equals
@@ -20,6 +22,8 @@ rules:
   - id: no-new-privileges
     description: "Containers must set no-new-privileges security option"
     severity: HIGH
+    cwe: "CWE-269"
+    cwe_rationale: "Without no-new-privileges, setuid binaries inside a container can escalate to root — maps directly to improper privilege management in Arista advisories"
     check:
       field: security_opt
       operator: contains
@@ -29,6 +33,8 @@ rules:
   - id: read-only-root-filesystem
     description: "Containers should use read-only root filesystem"
     severity: MEDIUM
+    cwe: "CWE-732"
+    cwe_rationale: "Writable root filesystem lets attackers persist malware or modify config — incorrect permission assignment that enables post-exploitation"
     check:
       field: read_only
       operator: equals
@@ -38,8 +44,21 @@ rules:
   - id: drop-all-capabilities
     description: "Containers must drop all Linux capabilities"
     severity: HIGH
+    cwe: "CWE-78"
+    cwe_rationale: "Linux capabilities like CAP_NET_RAW and CAP_SYS_ADMIN enable OS-level command execution — dropping all capabilities limits the blast radius of command injection vulnerabilities"
     check:
       field: cap_drop
       operator: contains
       value: "ALL"
+    pci_control: "PCI-DSS-v4.0-7.2.1"
+
+  - id: no-added-capabilities
+    description: "Containers must not add extra Linux capabilities"
+    severity: HIGH
+    cwe: "CWE-269"
+    cwe_rationale: "Adding capabilities like NET_ADMIN or SYS_PTRACE re-introduces the attack surface that drop-all-capabilities removed — maps to improper privilege management"
+    check:
+      field: cap_add
+      operator: is_empty
+      value: true
     pci_control: "PCI-DSS-v4.0-7.2.1"

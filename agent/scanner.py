@@ -66,61 +66,39 @@ def scan_containers() -> list[dict[str, Any]]:
 
             # Build a clean, structured dictionary of only the fields we care about for compliance
             # This is the observed state: what is actually running, not what we declared
+            # Extract bind mounts (host paths mounted into the container)
+            binds = host_config.get("Binds") or []
+            mount_sources = [b.split(":")[0] for b in binds if ":" in b]
+
+            # Extract port numbers from port bindings (e.g. "6379/tcp" -> 6379)
+            port_bindings = host_config.get("PortBindings") or {}
+            exposed_port_numbers = []
+            for port_key in port_bindings:
+                if port_bindings[port_key]:
+                    try:
+                        exposed_port_numbers.append(int(port_key.split("/")[0]))
+                    except ValueError:
+                        pass
+
             observed = {
-                # Short version of the container ID (first 12 characters), used for identification
                 "container_id": container.short_id,
-
-                # Human-readable container name from docker-compose (e.g. cg-api-service)
                 "name": container.name,
-
-                # The Docker image this container is running, e.g. nginx:alpine
-                # We take the first tag if multiple exist, or use "unknown" if no tags found
                 "image": container.image.tags[0] if container.image.tags else "unknown",
-
-                # Current container status: "running", "exited", "restarting", etc.
-                # Critical for detecting containers that should be running but are not
                 "status": container.status,
-
-                # Docker labels applied to this container
-                # We use these to read complianceguard metadata like tier and policy name
                 "labels": config.get("Labels", {}),
-
-                # Whether the container is running in privileged mode
-                # Privileged mode gives the container full access to the host system
-                # This should ALWAYS be false in a compliant environment (PCI-DSS 7.2.1)
                 "privileged": host_config.get("Privileged", False),
-
-                # Whether the container root filesystem is mounted as read-only
-                # Read-only filesystems prevent attackers from writing malicious files
-                # True = more secure, False = potential compliance gap
                 "read_only": host_config.get("ReadonlyRootfs", False),
-
-                # Network mode controls how the container connects to the network
-                # "host" mode shares the host machine network stack which is dangerous
-                # Should be "default" or a named network, never "host" in production
                 "network_mode": host_config.get("NetworkMode", "default"),
-
-                # List of security options applied to this container
-                # We look for "no-new-privileges:true" which prevents privilege escalation
-                # The or [] ensures we get an empty list rather than None if not set
                 "security_opt": host_config.get("SecurityOpt") or [],
-
-                # Linux capabilities that have been removed from this container
-                # Dropping ALL capabilities is the most secure baseline
-                # Then you add back only what the container specifically needs
                 "cap_drop": host_config.get("CapDrop") or [],
-
-                # Linux capabilities that have been explicitly added back
-                # Should be empty or minimal in a compliant container
                 "cap_add": host_config.get("CapAdd") or [],
-
-                # Network ports exposed by this container to the host machine
-                # We check these against the list of sensitive ports in our network policy
                 "ports": list(attrs.get("NetworkSettings", {})
                               .get("Ports", {}).keys()),
-
-                # Simple boolean: is this container currently running?
-                # Derived from status for easy comparison in the evaluator
+                "exposed_ports": exposed_port_numbers,
+                "mounts": mount_sources,
+                "memory_limit": host_config.get("Memory", 0),
+                "pid_mode": host_config.get("PidMode", ""),
+                "user": config.get("User", ""),
                 "running": container.status == "running",
             }
 

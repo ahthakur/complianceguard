@@ -10,12 +10,17 @@ services:
       complianceguard.policy: "container-policy"
     ports:
       - "8080:80"
+      - "6379:6379"
     privileged: true
     read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     command: ["sleep", "infinity"]
 
   data-processor:
@@ -26,6 +31,10 @@ services:
       complianceguard.tier: "2"
       complianceguard.policy: "container-policy"
     privileged: true
+    pid: "host"
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
     command: ["sleep", "infinity"]
 
   legacy-service:
@@ -35,6 +44,9 @@ services:
       complianceguard.managed: "true"
       complianceguard.tier: "3"
       complianceguard.policy: "container-policy"
+    network_mode: "host"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     command: ["sleep", "infinity"]
 
   audit-logger:
@@ -49,4 +61,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 128M
     command: ["sleep", "infinity"]
